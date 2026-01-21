@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-import torch.distributed as dist
+# import torch.distributed as dist
+import nandmachine.frontend.network.hook_dist as dist
 from transformers import Qwen3Config
 
 # from nanovllm.layers.activation import SiluAndMul
@@ -10,7 +11,7 @@ from transformers import Qwen3Config
 # from nanovllm.layers.rotary_embedding import get_rope
 # from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
-from torch_kernels import *
+from nandmachine.frontend.network.torch_kernels import *
 
 
 
@@ -145,21 +146,45 @@ class Qwen3DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    # def forward(
+    #     self,
+    #     positions: torch.Tensor,
+    #     hidden_states: torch.Tensor,
+    #     residual: torch.Tensor | None,
+    # ) -> tuple[torch.Tensor, torch.Tensor]:
+    #     if residual is None:
+    #         hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
+    #     else:
+    #         hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+
+    #     hidden_states = self.self_attn(positions, hidden_states)
+    #     hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+    #     hidden_states = self.mlp(hidden_states)
+
+    #     return hidden_states, residual # type: ignore
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
-        else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-        hidden_states = self.self_attn(positions, hidden_states)
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual # type: ignore
+        
+        residual = hidden_states
 
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.self_attn(positions, hidden_states)
+        
+        hidden_states = hidden_states + residual
+        residual = hidden_states
+
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+
+        hidden_states = hidden_states + residual
+
+        return hidden_states # type: ignore
 
 
 

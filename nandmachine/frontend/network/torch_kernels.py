@@ -2,7 +2,8 @@ from functools import lru_cache
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
+# import torch.distributed as dist  # Original distributed import
+from . import hook_dist as dist  # Fake distributed for single GPU testing
 
 
 __all__ = [
@@ -32,7 +33,6 @@ class SiluAndMul(nn.Module):
     def __init__(self):
         super().__init__()
 
-    @torch.compile
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, y = x.chunk(2, -1)
         return F.silu(x) * y
@@ -50,42 +50,45 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
-    @torch.compile
     def rms_forward(
         self,
         x: torch.Tensor,
     ) -> torch.Tensor:
-        orig_dtype = x.dtype
-        x = x.float()
-        var = x.pow(2).mean(dim=-1, keepdim=True)
-        x.mul_(torch.rsqrt(var + self.eps))
-        x = x.to(orig_dtype).mul_(self.weight)
+        # orig_dtype = x.dtype
+        # x = x.float()
+        # var = x.pow(2).mean(dim=-1, keepdim=True)
+        # x.mul_(torch.rsqrt(var + self.eps))
+        # x = x.to(orig_dtype).mul_(self.weight)
+        # x = x.mul_(self.weight)
         return x
 
-    @torch.compile
-    def add_rms_forward(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        orig_dtype = x.dtype
-        x = x.float().add_(residual.float())
-        residual = x.to(orig_dtype)
-        var = x.pow(2).mean(dim=-1, keepdim=True)
-        x.mul_(torch.rsqrt(var + self.eps))
-        x = x.to(orig_dtype).mul_(self.weight)
-        return x, residual
+    # def add_rms_forward(
+    #     self,
+    #     x: torch.Tensor,
+    #     residual: torch.Tensor,
+    # ) -> tuple[torch.Tensor, torch.Tensor]:
+    #     orig_dtype = x.dtype
+    #     x = x.float().add_(residual.float())
+    #     residual = x.to(orig_dtype)
+    #     var = x.pow(2).mean(dim=-1, keepdim=True)
+    #     x.mul_(torch.rsqrt(var + self.eps))
+    #     x = x.to(orig_dtype).mul_(self.weight)
+    #     return x, residual
 
+    # def forward(
+    #     self,
+    #     x: torch.Tensor,
+    #     residual: torch.Tensor | None = None,
+    # ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # if residual is None:
+        #     return self.rms_forward(x)
+        # else:
+            # return self.add_rms_forward(x, residual)
     def forward(
         self,
         x: torch.Tensor,
-        residual: torch.Tensor | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            return self.rms_forward(x)
-        else:
-            return self.add_rms_forward(x, residual)
-
+    ) -> torch.Tensor :
+        return self.rms_forward(x)
 
 
 
@@ -228,9 +231,8 @@ class RowParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
-        if self.tp_size > 1:
-            dist.all_reduce(y)
+        y = F.linear(x, self.weight, self.bias)
+        dist.all_reduce(y)
         return y
 
 
@@ -269,7 +271,6 @@ class RotaryEmbedding(nn.Module):
         cache = torch.cat((cos, sin), dim=-1).unsqueeze_(1)
         self.register_buffer("cos_sin_cache", cache, persistent=False)
 
-    @torch.compile
     def forward(
         self,
         positions: torch.Tensor,

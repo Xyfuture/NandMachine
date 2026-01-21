@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(jupyter notebook:*)",
+      "Bash(jupyter lab:*)",
+      "Bash(jupyter:*)",
+      "Bash(dir \"C:\\\\Users\\\\17280\\\\AppData\\\\Roaming\\\\jupyter\\\\runtime\")",
+      "Bash(tasklist:*)",
+      "Bash(powershell -Command \"Get-Process python | Where-Object {$_ProcessName -like ''*python*'' -or $_MainModule.FileName -like ''*jupyter*''} | Select-Object Id, ProcessName, Path\")",
+      "Bash(test:*)",
+      "Bash(python test_hook_dist.py:*)",
+      "Bash(:)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\ninitial pass\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

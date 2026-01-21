@@ -80,3 +80,4 @@ mapper 的支持
 
 要设定一个参数 表示当前有多少个 GPU (WorldSize), 当前 rank 总保持为 0 就好了
 对于 all reduce这个函数，直接返回一个 zeros 或者 ones 就可以了，此外要额外支持 meta kernel 能够正常返回维度的信息。
+相关代码实现到 hook_dist.py 中, @nandmachine\frontend\network\qwen3.py 中关于 torch dist 调用注释一下, 换成 fake 的 调用 
