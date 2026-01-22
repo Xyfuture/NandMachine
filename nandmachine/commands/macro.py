@@ -61,12 +61,19 @@ class SramPrefetch(RuntimeCall):
     pass 
     
 
+class SramPrefetchRelease(RuntimeCall):
+    pass 
+
 
 # ------ SRAM Operation --------
 
 @dataclass
 class  SramMalloc(RuntimeCall):
     pass 
+
+@dataclass
+class SramFree(RuntimeCall):
+    pass
 
 
 
@@ -76,6 +83,9 @@ class DramMalloc(RuntimeCall):
     pass 
 
 
+@dataclass
+class DramFree(RuntimeCall):
+    pass 
 
 
 # ------- xPU Operation ---------

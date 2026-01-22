@@ -81,3 +81,48 @@ mapper 的支持
 要设定一个参数 表示当前有多少个 GPU (WorldSize), 当前 rank 总保持为 0 就好了
 对于 all reduce这个函数，直接返回一个 zeros 或者 ones 就可以了，此外要额外支持 meta kernel 能够正常返回维度的信息。
 相关代码实现到 hook_dist.py 中, @nandmachine\frontend\network\qwen3.py 中关于 torch dist 调用注释一下, 换成 fake 的 调用 
+
+
+
+
+
+
+你帮我实现一个数据结构，用来当做页表， 实现一段连续的逻辑地址空间向真实硬件设备地址的映射，真实硬件设备有三类，分别是 nand address， dram address， sram address，需要标注一下具体硬件设备是那个。同时记录一下页表的各项状态，你思考一下一般会有哪些状态，和我讨论一下。
+
+
+
+
+地址的解析要加一个转换层？
+因为是按照xx KB 分页的，一次无论取多少数据，都访问一页？  
+
+
+
+对于 malloc 分配的地址， 应该记录什么信息， 才能在 free 的时候一次性释放
+
+
+帮我设计一个数据结构，需要能记录 mmap 分配的地址信息，方便后面 munmap 掉相关的映射，同时其还要支持记录映射大小，已用大小和动态更新功能.
+
+
+帮我写几个数据结构，记录一些 runtime function 造成的状态，方便最后的释放资源的时候使用，相关实现放到 @nandmachine\simulator\runtime\tables.py 中
+NandMmapEntry
+- 起始 logic addr
+- 记录分配了哪些 logic addr
+- 记录分配的大小
+- 记录读写的状态
+- 记录原始的 file id
+
+MallocEntry
+- 起始 logic addr
+- 记录分配了哪些 logic addr
+- 记录分配的大小
+- 记录物理设备是什么 dram sram 二选一
+
+PrefetchEntry
+- 起始logic addr
+- 记录分配了哪些logic addr
+- 记录对应哪些原始 logic addr
+
+你思考一下是不是少写了什么东西，有什么共同点可以抽象,如果有Base类，可以起名为 RuntimeResourceEntryBase。
+
+
+你在如上实现的基础上，看一下应该用一个什么样的数据结构来管理这些 entry。

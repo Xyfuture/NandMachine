@@ -1,5 +1,28 @@
 
+from enum import Enum
 
+
+class DeviceType(Enum):
+    """Hardware device types for physical memory."""
+    NAND = "nand"
+    DRAM = "dram"
+    SRAM = "sram"
+
+
+class Permission:
+    """Permission flags for page table entries."""
+    READ = 0x1   # 0b01
+    WRITE = 0x2  # 0b10
+
+    @staticmethod
+    def has_read(perm: int) -> bool:
+        """Check if permission includes read access."""
+        return (perm & Permission.READ) != 0
+
+    @staticmethod
+    def has_write(perm: int) -> bool:
+        """Check if permission includes write access."""
+        return (perm & Permission.WRITE) != 0
 
 
 class BaseFreeTable:
@@ -111,3 +134,195 @@ class SRAMFreeTable(RAMFreeTable):
 
 
 
+class PageTableEntry:
+    """
+    Page table entry that maps a logical page to a physical page.
+
+    Attributes:
+        device_type: Type of hardware device (NAND/DRAM/SRAM)
+        physical_page: Physical page number on the device
+        valid: Whether this entry is valid
+        permission: Access permissions (READ/WRITE)
+    """
+
+    def __init__(self, device_type: DeviceType, physical_page: int,
+                 permission: int = Permission.READ | Permission.WRITE):
+        """
+        Initialize a page table entry.
+
+        Args:
+            device_type: Type of hardware device
+            physical_page: Physical page number on the device
+            permission: Access permissions (default: READ | WRITE)
+        """
+        self.device_type = device_type
+        self.physical_page = physical_page
+        self.valid = True
+        self.permission = permission
+
+
+class PageTable:
+    """
+    Page table for mapping logical addresses to physical device addresses.
+    Supports mapping to NAND, DRAM, and SRAM devices.
+    """
+
+    def __init__(self, page_size: int = 4096):
+        """
+        Initialize page table.
+
+        Args:
+            page_size: Size of each page in bytes (configurable)
+        """
+        self.page_size = page_size
+        self.entries: dict[int, PageTableEntry] = {}  # logical_page -> PTE
+
+    def map_page(self, logical_page: int, device_type: DeviceType,
+                 physical_page: int, permission: int = Permission.READ | Permission.WRITE) -> bool:
+        """
+        Map a logical page to a physical page on a device.
+
+        Args:
+            logical_page: Logical page number
+            device_type: Type of hardware device
+            physical_page: Physical page number on the device
+            permission: Access permissions (default: READ | WRITE)
+
+        Returns:
+            True if mapping was successful, False if page already mapped
+        """
+        if logical_page in self.entries:
+            return False
+
+        self.entries[logical_page] = PageTableEntry(device_type, physical_page, permission)
+        return True
+
+    def unmap_page(self, logical_page: int) -> bool:
+        """
+        Remove mapping for a logical page.
+
+        Args:
+            logical_page: Logical page number to unmap
+
+        Returns:
+            True if unmapping was successful, False if page was not mapped
+        """
+        if logical_page not in self.entries:
+            return False
+
+        del self.entries[logical_page]
+        return True
+
+    def translate(self, logical_page: int) -> tuple[DeviceType, int] | None:
+        """
+        Translate logical page to (device_type, physical_page).
+
+        Args:
+            logical_page: Logical page number to translate
+
+        Returns:
+            Tuple of (device_type, physical_page) if valid mapping exists, None otherwise
+        """
+        if logical_page not in self.entries:
+            return None
+
+        entry = self.entries[logical_page]
+        if not entry.valid:
+            return None
+
+        return (entry.device_type, entry.physical_page)
+
+    def check_permission(self, logical_page: int, required_perm: int) -> bool:
+        """
+        Check if the page has required permissions.
+
+        Args:
+            logical_page: Logical page number to check
+            required_perm: Required permission flags (READ/WRITE)
+
+        Returns:
+            True if page has required permissions, False otherwise
+        """
+        if logical_page not in self.entries:
+            return False
+
+        entry = self.entries[logical_page]
+        if not entry.valid:
+            return False
+
+        return (entry.permission & required_perm) == required_perm
+
+    def is_valid(self, logical_page: int) -> bool:
+        """
+        Check if a logical page has a valid mapping.
+
+        Args:
+            logical_page: Logical page number to check
+
+        Returns:
+            True if page has a valid mapping, False otherwise
+        """
+        if logical_page not in self.entries:
+            return False
+
+        return self.entries[logical_page].valid
+
+    def invalidate(self, logical_page: int) -> bool:
+        """
+        Invalidate a page table entry without removing it.
+
+        Args:
+            logical_page: Logical page number to invalidate
+
+        Returns:
+            True if invalidation was successful, False if page was not mapped
+        """
+        if logical_page not in self.entries:
+            return False
+
+        self.entries[logical_page].valid = False
+        return True
+
+    def get_mapped_count(self) -> int:
+        """
+        Get number of mapped pages.
+
+        Returns:
+            Number of pages with mappings (including invalid entries)
+        """
+        return len(self.entries)
+
+    def get_device_pages(self, device_type: DeviceType) -> list[int]:
+        """
+        Get all logical pages mapped to a specific device.
+
+        Args:
+            device_type: Type of hardware device to filter by
+
+        Returns:
+            List of logical page numbers mapped to the specified device
+        """
+        return [
+            logical_page
+            for logical_page, entry in self.entries.items()
+            if entry.device_type == device_type and entry.valid
+        ]
+
+
+
+
+
+
+
+__all__ = [
+    # "BaseFreeTable",
+    "NandFreeTable",
+    "NandFileTable",
+    # "RAMFreeTable",
+    "DRAMFreeTable",
+    "SRAMFreeTable",
+    "PageTable",
+    "PageTableEntry",
+    "DeviceType",
+    "Permission"
+]

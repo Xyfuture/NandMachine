@@ -11,7 +11,11 @@
       "Bash(python test_hook_dist.py:*)",
       "Bash(:)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\ninitial pass\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\ninitial pass\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(wc:*)",
+      "Bash(python test_pagetable.py:*)",
+      "Bash(python test_entries.py:*)"
     ]
   }
 }
