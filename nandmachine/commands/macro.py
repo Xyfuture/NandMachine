@@ -26,7 +26,7 @@ class RuntimeCall(MacroOp):
 # ------  Nand Operation ------
 @dataclass
 class NandMmap(RuntimeCall):
-    pass 
+    file_id:int 
 
 
 @dataclass
@@ -58,7 +58,8 @@ class NandGroupWrite(RuntimeCall):
 # prefetch -- read only 
 @dataclass 
 class SramPrefetch(RuntimeCall):
-    pass 
+    prefetch_ptr:int 
+    prefetch_page_counts:int 
     
 
 class SramPrefetchRelease(RuntimeCall):
@@ -93,3 +94,24 @@ class DramFree(RuntimeCall):
 @dataclass
 class MatMul(MacroOp):
     pass 
+
+
+
+
+__all__ = [
+    "MacroOp",
+    "RuntimeCall",
+    "NandMmap",
+    "NandMunmap",
+    "NandGroupArrange",
+    "NandGroupMmap",
+    "NandGroupMunmap",
+    "NandGroupWrite",
+    "SramPrefetch",
+    "SramPrefetchRelease",
+    "SramMalloc",
+    "SramFree",
+    "DramMalloc",
+    "DramFree",
+    "MatMul",
+]

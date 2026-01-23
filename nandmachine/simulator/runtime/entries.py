@@ -1,6 +1,6 @@
 """Runtime resource entry classes for tracking allocated resources."""
 
-from typing import Optional
+from typing import Optional, Dict, Any
 from .tables import DeviceType, Permission
 
 
@@ -248,9 +248,108 @@ class PrefetchEntry(RuntimeResourceEntryBase):
         return len(self.source_logical_pages)
 
 
+class RuntimeResourceTable:
+    """
+    Resource management table for tracking RuntimeResourceEntryBase instances.
+
+    Provides a mapping from start_logical_addr to entry instances, supporting
+    add, remove, and lookup operations.
+
+    Attributes:
+        _entries: Dictionary mapping start_logical_addr to entry instances
+    """
+
+    def __init__(self):
+        """Initialize an empty resource table."""
+        self._entries: Dict[int, RuntimeResourceEntryBase] = {}
+
+    def add_entry(self, entry: RuntimeResourceEntryBase) -> bool:
+        """
+        Add an entry to the resource table.
+
+        Args:
+            entry: The entry to add
+
+        Returns:
+            True if entry was added successfully, False if address conflicts
+        """
+        if not entry.is_valid():
+            return False
+
+        addr = entry.start_logical_addr
+        if addr in self._entries:
+            return False
+
+        self._entries[addr] = entry
+        return True
+
+    def remove_entry(self, start_logical_addr: int) -> bool:
+        """
+        Remove an entry from the resource table.
+
+        Args:
+            start_logical_addr: The start logical address of the entry to remove
+
+        Returns:
+            True if entry was removed, False if not found
+        """
+        if start_logical_addr in self._entries:
+            del self._entries[start_logical_addr]
+            return True
+        return False
+
+    def get_entry(self, start_logical_addr: int) -> Optional[RuntimeResourceEntryBase]:
+        """
+        Get an entry by its start logical address.
+
+        Args:
+            start_logical_addr: The start logical address to look up
+
+        Returns:
+            The entry if found, None otherwise
+        """
+        return self._entries.get(start_logical_addr)
+
+    def has_entry(self, start_logical_addr: int) -> bool:
+        """
+        Check if an entry exists at the given start logical address.
+
+        Args:
+            start_logical_addr: The start logical address to check
+
+        Returns:
+            True if entry exists, False otherwise
+        """
+        return start_logical_addr in self._entries
+
+    def get_all_entries(self) -> Dict[int, RuntimeResourceEntryBase]:
+        """
+        Get all entries in the resource table.
+
+        Returns:
+            Dictionary mapping start_logical_addr to entry instances
+        """
+        return self._entries.copy()
+
+    def get_entry_count(self) -> int:
+        """
+        Get the number of entries in the resource table.
+
+        Returns:
+            Number of entries
+        """
+        return len(self._entries)
+
+    def clear(self) -> None:
+        """Remove all entries from the resource table."""
+        self._entries.clear()
+
+
+
 __all__ = [
     "RuntimeResourceEntryBase",
     "NandMmapEntry",
     "MallocEntry",
     "PrefetchEntry",
+    "RuntimeResourceTable",
 ]

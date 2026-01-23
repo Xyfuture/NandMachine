@@ -30,12 +30,21 @@ class BaseFreeTable:
 
 
 class NandFreeTable(BaseFreeTable):
+
+    # 管理 free 的 nand page，
+
     pass 
 
 
 
 
 class NandFileTable:
+    
+    # 记录一下 file id 到 nand physical id 的转换
+    # 支持 各个层级地址的维护 --> 需要一个地址转换器
+    # 支持 按照某些要求，写入到指定的 plane 中 --> 需要 NandFreeTable 的支持
+    
+    # 加入一堆 checker 函数， 检索一下 weight 和 kv cache 有没有按照想要的方式分布 
     pass 
 
 

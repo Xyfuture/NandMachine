@@ -15,7 +15,9 @@
       "Bash(git push:*)",
       "Bash(wc:*)",
       "Bash(python test_pagetable.py:*)",
-      "Bash(python test_entries.py:*)"
+      "Bash(python test_entries.py:*)",
+      "Bash(python:*)",
+      "Bash(::*)"
     ]
   }
 }

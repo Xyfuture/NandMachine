@@ -1,6 +1,6 @@
 
 from nandmachine.simulator.runtime.tables import * 
-
+from nandmachine.commands.macro import *
 
 
 
@@ -20,7 +20,49 @@ class RuntimeManager():
         # TODO
         # - page table design
         # - config design
-        # - kernel design
+        # - kernel design  
+
+        
+        # Procedure
+        # - 初始化 这一系列的 table
+        # - 完成 nand file table 初步赋值
+        # - 实现 
+
+
+
+    def NandMmapHandler(self,command:NandMmap):
+        # 从 nand file table 中拿一个 file
+
+        
+
+        pass  
+
+
+    def NandMunmapHandler(self):
+        pass
+
+    def SramPrefetchHandler(self):
+
+        pass 
+
+
+
+    def SramPrefetchReleaseHandler(self):
+        pass 
+
+
+    def DramMallocHandler(self):
+        pass 
+
+    def DramFreeHandler(self):
+        pass 
+
+    def SramMallocHandler(self):
+        pass 
+
+    def SramFreeHandler(self):
+        pass 
+
 
     
 

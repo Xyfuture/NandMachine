@@ -126,3 +126,7 @@ PrefetchEntry
 
 
 你在如上实现的基础上，看一下应该用一个什么样的数据结构来管理这些 entry。
+
+
+
+请你帮我实现一个 资源管理的表， 实现在 @nandmachine/simulator/runtime/entries.py 中，用于管理RuntimeResourceEntryBase，主要是一个 dict， 完成 start_logical_addr -> entry 的映射，支持添加和删除
