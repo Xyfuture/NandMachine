@@ -1,4 +1,4 @@
-# 记录各个module 的关键信息 
+# Record key metadata for each module node
 
 import math
 from typing import Any
@@ -8,126 +8,146 @@ import torch.nn as nn
 import torch.fx as fx
 from torch.fx import GraphModule
 
-
 from nandmachine.frontend.core.passes.base import GraphPass
-from nandmachine.frontend.network.torch_kernels import Attention, LinearBase, RowParallelLinear
-
-
-# 所有的东西在这里面做好 ， 负载内容的记载
-"""
-负责内容
-在 node.meta 中记录关键信息
-
-- 记录 输入/输出的 shape --> 多个输入/输出情况的特判
-- module_type -> 从 graph module 中获取，最后记录下来
-- linear_info 针对 linear 类型单独的记录
-    - weight_shape 
-    - require_all_reduce ? --> 有无更好的方式记录这个信息
-- attention_info 针对 attention 类型单独的记录
-    - pass -> 先不记录了， 后面想好了再重新记录
-- nand_store_pages -> 记录这个 node 需要存储多少 nand pages, 不需要存储数据的可以跳过
-    - 目前对于 linear 需要进行存储
-
-
-"""
-
-
-
-def _shape_from_tensor_meta(meta: Any):
-    if meta is None:
-        return None
-    if hasattr(meta, "shape"):
-        try:
-            return tuple(meta.shape)
-        except Exception:
-            return None
-    return None
-
-
-def _extract_shape(val: Any):
-    if val is None:
-        return None
-    if isinstance(val, torch.Tensor):
-        return tuple(val.shape)
-    if isinstance(val, (list, tuple)):
-        return type(val)(_extract_shape(v) for v in val)
-    if isinstance(val, dict):
-        return {k: _extract_shape(v) for k, v in val.items()}
-    return _shape_from_tensor_meta(val)
-
-
-def _node_output_shape(node: fx.Node):
-    tensor_meta = node.meta.get("tensor_meta")
-    shape = _shape_from_tensor_meta(tensor_meta)
-    if shape is not None:
-        return shape
-    if "val" in node.meta:
-        return _extract_shape(node.meta["val"])
-    return None
-
-
-def _map_arg_shapes(arg: Any):
-    if isinstance(arg, fx.Node):
-        return _node_output_shape(arg)
-    if isinstance(arg, (list, tuple)):
-        return type(arg)(_map_arg_shapes(v) for v in arg)
-    if isinstance(arg, dict):
-        return {k: _map_arg_shapes(v) for k, v in arg.items()}
-    return _extract_shape(arg)
+from nandmachine.frontend.network.torch_kernels import (
+    Attention, LinearBase, RowParallelLinear
+)
 
 
 class RecorderPass(GraphPass):
-    def __init__(self) -> None:
+    """
+    A graph pass that records key metadata for nodes after FakeTensorProp.
+
+    Records:
+    - input_shapes / output_shapes for all nodes
+    - module_type for call_module nodes
+    - linear_info for LinearBase subclasses
+    - nand_store_pages for LinearBase subclasses
+    """
+
+    BYTES_PER_ELEMENT = 2   # fp16
+    PAGE_SIZE_BYTES = 4096  # 4KB per page
+
+    def __init__(self):
         super().__init__()
+        self._linear_types = (LinearBase,)
+        self._attention_types = (Attention,)
 
-        self._to_record_type = {
-            LinearBase,
-            nn.Linear,
-            Attention
-        }
-    
+    def transform(self, graph_module: GraphModule) -> fx.Graph:
+        """
+        Transform the graph by recording metadata for each node.
 
-    def transform(self, gm: GraphModule):
-        graph = gm.graph
+        Args:
+            graph_module: The GraphModule to process
 
-        # Build module dictionary for fast lookup
-        module_dict = dict(gm.named_modules())
+        Returns:
+            The modified graph with metadata recorded in node.meta
+        """
+        graph = graph_module.graph
 
         for node in graph.nodes:
-            # Only process module call nodes
-            if node.op == "call_module":
-                module_name = node.target
+            # Record shapes for all nodes
+            self._record_shapes(node)
 
-                # Get the actual module object
-                if module_name in module_dict:
-                    target_module = module_dict[module_name]
+            # For call_module nodes, record additional info
+            if node.op == 'call_module':
+                module = graph_module.get_submodule(node.target)
+                self._record_module_type(node, module)
 
-                    # Check if module type should be recorded
-                    if type(target_module) in self._to_record_type:
-                        # Record the target object in node metadata
-                        node.meta["target_obj"] = target_module
-                        node.meta["module_type"] = type(target_module).__name__
+                # Record linear-specific info
+                if isinstance(module, self._linear_types):
+                    self._record_linear_info(node, module)
+                    self._record_nand_pages(node, module)
 
-                        input_shapes = _map_arg_shapes(node.args)
-                        if node.kwargs:
-                            input_shapes = {
-                                "args": input_shapes,
-                                "kwargs": _map_arg_shapes(node.kwargs),
-                            }
-                        node.meta["input_shapes"] = input_shapes
-                        node.meta["output_shapes"] = _node_output_shape(node)
+        return graph
 
-                        if isinstance(target_module, (LinearBase, nn.Linear)):
-                            linear_info = {}
-                            if hasattr(target_module, "weight") and target_module.weight is not None:
-                                linear_info["weight_shape"] = tuple(target_module.weight.shape)
-                                weight_numel = target_module.weight.numel()
-                                weight_bytes = weight_numel * 2  # fp16 weights
-                                pages = math.ceil(weight_bytes / 4096)
-                                if pages > 0:
-                                    node.meta["nand_store_pages"] = pages
-                            linear_info["require_all_reduce"] = isinstance(target_module, RowParallelLinear)
-                            node.meta["linear_info"] = linear_info
+    def _record_shapes(self, node: fx.Node) -> None:
+        """Record input and output shapes for a node."""
+        # Extract output shapes from node.meta['val']
+        if 'val' in node.meta:
+            node.meta['output_shapes'] = self._extract_shapes(node.meta['val'])
 
+        # Extract input shapes from node.args
+        input_shapes = []
+        for arg in node.args:
+            if isinstance(arg, fx.Node) and 'val' in arg.meta:
+                input_shapes.append(self._extract_shapes(arg.meta['val']))
+            elif isinstance(arg, (tuple, list)):
+                # Handle tuple/list of nodes
+                nested_shapes = []
+                for item in arg:
+                    if isinstance(item, fx.Node) and 'val' in item.meta:
+                        nested_shapes.append(self._extract_shapes(item.meta['val']))
+                if nested_shapes:
+                    input_shapes.append(nested_shapes)
 
-    
+        if input_shapes:
+            node.meta['input_shapes'] = input_shapes
+
+    def _extract_shapes(self, val: Any) -> Any:
+        """
+        Extract shapes from a value.
+
+        Args:
+            val: A tensor, tuple/list of tensors, or None
+
+        Returns:
+            Shape tuple, list of shapes, or None
+        """
+        if val is None:
+            return None
+
+        if isinstance(val, torch.Tensor):
+            return tuple(val.shape)
+
+        if isinstance(val, (tuple, list)):
+            return [self._extract_shapes(v) for v in val]
+
+        return None
+
+    def _record_module_type(self, node: fx.Node, module: nn.Module) -> None:
+        """Record the module type name."""
+        node.meta['module_type'] = type(module).__name__
+
+    def _record_linear_info(self, node: fx.Node, module: LinearBase) -> None:
+        """Record linear-specific information."""
+        linear_info = {
+            'weight_shape': tuple(module.weight.shape),
+            'require_all_reduce': isinstance(module, RowParallelLinear),
+            'has_bias': module.bias is not None,
+        }
+
+        # Record tensor parallel info if available
+        if module.tp_dim is not None:
+            linear_info['tp_info'] = {
+                'tp_dim': module.tp_dim,
+                'tp_rank': module.tp_rank,
+                'tp_size': module.tp_size,
+            }
+
+        node.meta['linear_info'] = linear_info
+
+    def _record_nand_pages(self, node: fx.Node, module: LinearBase) -> None:
+        """Calculate and record the number of NAND storage pages needed."""
+        # Calculate weight storage
+        weight_elements = module.weight.numel()
+        total_bytes = weight_elements * self.BYTES_PER_ELEMENT
+
+        # Add bias storage if present
+        if module.bias is not None:
+            bias_elements = module.bias.numel()
+            total_bytes += bias_elements * self.BYTES_PER_ELEMENT
+
+        # Calculate number of pages
+        num_pages = math.ceil(total_bytes / self.PAGE_SIZE_BYTES)
+
+        node.meta['nand_store_pages'] = num_pages
+
+        # Also record detailed storage info for debugging
+        node.meta['storage_info'] = {
+            'weight_elements': weight_elements,
+            'bias_elements': module.bias.numel() if module.bias is not None else 0,
+            'total_bytes': total_bytes,
+            'bytes_per_element': self.BYTES_PER_ELEMENT,
+            'page_size_bytes': self.PAGE_SIZE_BYTES,
+        }
