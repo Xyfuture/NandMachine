@@ -17,7 +17,9 @@
       "Bash(python test_pagetable.py:*)",
       "Bash(python test_entries.py:*)",
       "Bash(python:*)",
-      "Bash(::*)"
+      "Bash(::*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd runtime resource management and page table infrastructure\n\n- Implement RuntimeResourceTable for managing runtime resource entries\n- Add resource management handlers in RuntimeManager\n- Enhance macro commands with additional fields \\(file_id, prefetch parameters\\)\n- Add comprehensive resource entry classes \\(NandMmapEntry, MallocEntry, PrefetchEntry\\)\n- Implement page table and address translation infrastructure\n- Add utility modules for address management \\(addr.py\\) and entry points\n- Create test file for resource table functionality\n- Update project documentation and Claude settings\nEOF\n\\)\")",
+      "Bash(find:*)"
     ]
   }
 }

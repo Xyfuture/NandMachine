@@ -1,5 +1,9 @@
 
 from enum import Enum
+from typing import Optional
+
+from nandmachine.simulator.runtime.addr import NandBlockAddress, NandAddress
+from nandmachine.config.config import NandConfig
 
 
 class DeviceType(Enum):
@@ -30,12 +34,94 @@ class BaseFreeTable:
 
 
 class NandFreeTable(BaseFreeTable):
+    """
+    Manages free NAND pages by tracking the next writable page for each block.
+    NAND blocks must be written sequentially, so we track the next available page per block.
+    """
 
-    # 管理 free 的 nand page，
+    def __init__(self, config: NandConfig) -> None:
+        super().__init__()
+        self.config = config
+        # Maps block address (int) to next writable page number (int)
+        self.next_page: dict[int, int] = {}
+
+    def allocate(self, block_addr: NandBlockAddress) -> Optional[int]:
+        """
+        Allocate the next writable page in the specified block.
+
+        Args:
+            block_addr: Block address (channel-plane-block)
+
+        Returns:
+            Full NAND address (int) with page component, or None if block is full
+        """
+        # Get current next page for this block (default to 0 for new blocks)
+        next_page = self.next_page.get(block_addr.addr, 0)
+
+        # Check if block is full
+        if next_page >= self.config.num_pages:
+            return None
+
+        # Create full address with page component
+        full_addr = NandAddress(0, self.config)
+        full_addr.channel = block_addr.channel
+        full_addr.plane = block_addr.plane
+        full_addr.block = block_addr.block
+        full_addr.page = next_page
+
+        # Update next page counter
+        self.next_page[block_addr.addr] = next_page + 1
+
+        return full_addr.addr 
+
+    def free(self, block_addr: NandBlockAddress):
+        """
+        Free an entire block, resetting it to writable state.
+        After freeing, the next allocate will start from page 0.
+
+        Args:
+            block_addr: Block address to free
+        """
+        if block_addr.addr in self.next_page:
+            del self.next_page[block_addr.addr]
+
+    def check_free_page(self, addr: int) -> bool:
+        """
+        Check if the given address (including page) is the next writable page.
+
+        Args:
+            addr: Full NAND address (int) including page component
+
+        Returns:
+            True if this page is the next writable page in its block, False otherwise
+        """
+        # Convert to NandAddress
+        full_addr = NandAddress(addr, self.config)
+
+        # Get block address
+        block_addr = full_addr.to_block_address()
+
+        # Get next writable page for this block
+        next_page = self.next_page.get(block_addr.addr, 0)
+
+        # Check if this page is the next writable one and within valid range
+        return full_addr.page == next_page and next_page < self.config.num_pages 
+
 
     pass 
 
 
+class NandFileEntry:
+    def __init__(self,file_id:int,nand_pages:list[int]=[],permission=Permission.READ,type:Optional[str]=None) -> None:
+        
+        self.file_id:int = file_id 
+        self.nand_pages:list[int] = nand_pages
+        self.permission = permission        
+        self.type:Optional[str] = type # weight or kv cache
+    
+    @property
+    def num_nand_pages(self)->int:
+        return len(self.nand_pages)
 
 
 class NandFileTable:
@@ -45,9 +131,29 @@ class NandFileTable:
     # 支持 按照某些要求，写入到指定的 plane 中 --> 需要 NandFreeTable 的支持
     
     # 加入一堆 checker 函数， 检索一下 weight 和 kv cache 有没有按照想要的方式分布 
-    pass 
 
+    def __init__(self) :
 
+        self.entries:dict[int,NandFileEntry] = {}
+
+        self.next_file_id = 0
+        
+
+    def get_file_by_id(self,file_id:int)->Optional[NandFileEntry]:
+        return self.entries.get(file_id,None)
+    
+    def get_new_file_id(self):
+        while self.next_file_id in self.entries:
+            self.next_file_id += 1 
+        return self.next_file_id
+    
+    def add_entry(self,nand_file_entry:NandFileEntry):
+        assert nand_file_entry.file_id not in self.entries
+        self.entries[nand_file_entry.file_id] = nand_file_entry
+
+    def remove_entry(self,file_id):
+        assert file_id in self.entries
+        del self.entries[file_id]
 
 
 class RAMFreeTable(BaseFreeTable):
@@ -185,6 +291,13 @@ class PageTable:
         """
         self.page_size = page_size
         self.entries: dict[int, PageTableEntry] = {}  # logical_page -> PTE
+
+        self.next_free_addr = 2**30
+        self.netx_free_addr_step = 2*30 
+
+    def get_next_free_addr(self):
+        self.next_free_addr += self.netx_free_addr_step
+        return self.next_free_addr
 
     def map_page(self, logical_page: int, device_type: DeviceType,
                  physical_page: int, permission: int = Permission.READ | Permission.WRITE) -> bool:

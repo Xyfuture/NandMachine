@@ -130,3 +130,49 @@ PrefetchEntry
 
 
 请你帮我实现一个 资源管理的表， 实现在 @nandmachine/simulator/runtime/entries.py 中，用于管理RuntimeResourceEntryBase，主要是一个 dict， 完成 start_logical_addr -> entry 的映射，支持添加和删除
+
+
+
+
+
+- [] 提供基本的 kernel 操作
+- [] 
+
+
+
+
+
+最新的实现路径
+- 前端 通过 ssa like 的技术，直接给所有的指令预备分配好地址，主要是 mmap 返回的 logic Address
+- 前端 给出一个指令队列，顺序执行 --> list [MacroOp] 格式的， prefetch 和其他的都混在一起
+    - 借用 python 的运行时 issue
+    - 先每个 op 保存一份，然后所有 op 在搞出一份来
+- 后端 首先将 MacroOp 转换为 MicroOp -- 重点是 is_finish 和 finish event 保证两个队列能衔接上
+    - 拆分 prefetch， 实现预取操作
+
+
+
+
+
+帮我写一个 
+
+
+
+层次化的 pass
+- 原始 torch 的 op 
+- 跑出 shape 信息
+- 跑出基本的矩阵信息 --> linear | attention  
+- 跑出 需要保存在 nand 中内容，同时记录分配方式
+- 跑出指令信息， 调用 kernel 中的内容
+
+
+
+
+针对 torch fx graph 的计算图，帮我写一个pass，实现提取 graph module 中的 module 记录到 node 中的功能， 目前针对 nn.Linear 类 ， Attention 类，
+
+
+
+
+Graph 全局信息
+- attention 相关的信息
+- 并行的信息 -- hook 一下 dist 中的内容

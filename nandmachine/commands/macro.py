@@ -16,6 +16,15 @@ class MacroOp:
     def __post_init__(self) -> None:
         self.id = self._next_id()
 
+# Runtime 之前的 kernel
+
+
+@dataclass
+class NandCreateFile(MacroOp):
+    # 创建权重文件 -- 仅仅供 mapper 使用
+    # 需要单独的指令吗
+    pass 
+
 
 @dataclass
 class RuntimeCall(MacroOp):
@@ -28,10 +37,12 @@ class RuntimeCall(MacroOp):
 class NandMmap(RuntimeCall):
     file_id:int 
 
+    pre_alloc_logic_addr:int 
+
 
 @dataclass
 class NandMunmap(RuntimeCall):
-    pass 
+    addr:int 
 
 
 @dataclass
@@ -42,6 +53,7 @@ class NandGroupArrange(RuntimeCall):
 @dataclass
 class NandGroupMmap(RuntimeCall):
     pass 
+
 
 
 @dataclass
@@ -58,23 +70,27 @@ class NandGroupWrite(RuntimeCall):
 # prefetch -- read only 
 @dataclass 
 class SramPrefetch(RuntimeCall):
-    prefetch_ptr:int 
-    prefetch_page_counts:int 
-    
+    prefetch_addr:int  # logic addr
+    num_pages:int 
 
+    pre_alloc_logic_addr:int     
+
+@dataclass
 class SramPrefetchRelease(RuntimeCall):
-    pass 
+    addr:int  
 
 
 # ------ SRAM Operation --------
 
 @dataclass
 class  SramMalloc(RuntimeCall):
-    pass 
+    num_pages:int  
+
+    pre_alloc_logic_addr: int 
 
 @dataclass
 class SramFree(RuntimeCall):
-    pass
+    addr:int
 
 
 
