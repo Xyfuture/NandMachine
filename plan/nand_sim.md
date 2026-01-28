@@ -16,3 +16,26 @@
 
 我要设计一个 Nand 时序模拟器，
 
+
+
+
+Nand Controller + Nand die 模拟
+
+首先实现为 非抢占式，然后实现为抢占式, 双方的接口定义好
+在指令中预埋同步操作 or 放一个回调函数
+
+Prefetch Engine + Compute Engine -> Nand Controller -> Nand Sim Core
+
+
+
+
+我现在要实现一个NandController 和 NandSimCore 类，用于实现 Nand 访问的仿真，
+NandController 类来自 
+
+
+
+
+
+NandController 接口
+- request 是 一堆 page 级别的访问治理， 但是一次一个组 level --> 需要定义新的接口
+- 
