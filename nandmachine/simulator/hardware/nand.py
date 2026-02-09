@@ -1,7 +1,8 @@
 from collections import deque
 from Desim.Core import SimModule,Event,SimTime
 from Desim import EventQueue
-from nandmachine.commands.micro import HwOp
+
+from nandmachine.simulator.hardware.utils import MarcoOpSlot
 
 
 
@@ -9,13 +10,13 @@ class NandController(SimModule):
     def __init__(self):
         super().__init__()
 
-        self.waiting_request_queue:deque[HwOp] = deque()
+        self.waiting_request_queue:deque[MarcoOpSlot] = deque()
         # self.runing_request_queue:
 
         self.core_event_queue:EventQueue = EventQueue()
         
 
-    def request_handler(self,command:HwOp):
+    def request_handler(self,command:MarcoOpSlot):
         self.waiting_request_queue.append(command)
 
         self.core_event_queue.next_notify(SimTime(1))

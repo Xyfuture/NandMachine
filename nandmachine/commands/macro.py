@@ -1,12 +1,19 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
+
+from typing import Optional
 
 
 @dataclass
 class MacroOp:
     id: int = field(init=False)
+    input_ops:Optional[list[MacroOp]] = None 
+
 
     _global_id_counter: ClassVar[int] = 0
+
+
 
     @classmethod
     def _next_id(cls) -> int:

@@ -1,7 +1,7 @@
 from Desim import SimModule
 
-from nandmachine.commands.micro import HwOp
 from nandmachine.simulator.hardware.nand import NandController
+from nandmachine.simulator.hardware.utils import MarcoOpSlot
 from nandmachine.simulator.runtime.manager import RuntimeManager
 
 
@@ -17,7 +17,7 @@ class PerfetchEngine(SimModule):
 
         self.nand_controller:NandController = None
 
-        self.prefetch_commnad_queue:list[HwOp] = None 
+        self.prefetch_commnad_queue:list[MarcoOpSlot] = None 
 
 
 

@@ -13,6 +13,10 @@ class NandConfig(MemoryConfig):
     num_block:int  #  per plane
     num_pages:int  # per block 
 
+    tRead: float # ns
+    tWrite: float 
+    tErase: float 
+
 
 @dataclass
 class DramConfig(MemoryConfig):

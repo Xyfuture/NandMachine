@@ -1,4 +1,3 @@
-from typing import Optional
 from nandmachine.config.config import NandConfig, DramConfig, SramConfig
 
 
@@ -21,76 +20,46 @@ class NandAddressTranslator(AddressTranslatorBase):
 
 
 class NandAddress(AddressBase):
+    # 这里面的地址就到 page 结束了， page 内部的地址不关心 
     def __init__(self, addr: int, config: NandConfig):
         super().__init__("nand")
         self.addr = addr
         self.config = config
-        # self.channel: Optional[int] = None
-        # self.plane: Optional[int] = None
-        # self.block: Optional[int] = None
-        # self.page: Optional[int] = None
 
-    def _get_block_digits(self) -> int:
-        """Get number of decimal digits for block component"""
-        return len(str(self.config.num_block - 1)) if self.config.num_block > 0 else 1
-
-    def _get_page_digits(self) -> int:
-        """Get number of decimal digits for page component"""
-        return len(str(self.config.num_pages - 1)) if self.config.num_pages > 0 else 1
-
-    def _get_plane_digits(self) -> int:
-        """Get number of decimal digits for plane component"""
-        return len(str(self.config.num_plane - 1)) if self.config.num_plane > 0 else 1
-
-    def _get_channel_digits(self) -> int:
-        """Get number of decimal digits for channel component"""
-        return len(str(self.config.num_channels - 1)) if self.config.num_channels > 0 else 1
 
     def _encode(self, channel: int, plane: int, page: int, block: int) -> int:
-        """Encode components into a single address integer"""
-        block_digits = self._get_block_digits()
-        page_digits = self._get_page_digits()
-        plane_digits = self._get_plane_digits()
+        """Encode components using continuous mixed-radix layout."""
+        blocks_per_page = self.config.num_block
+        blocks_per_plane = self.config.num_block * self.config.num_pages
+        blocks_per_channel = blocks_per_plane * self.config.num_plane
 
         addr = block
-        addr += page * (10 ** block_digits)
-        addr += plane * (10 ** (block_digits + page_digits))
-        addr += channel * (10 ** (block_digits + page_digits + plane_digits))
-
+        addr += page * blocks_per_page
+        addr += plane * blocks_per_plane
+        addr += channel * blocks_per_channel
         return addr
 
     @property
     def channel(self) -> int:
         """Extract channel from address"""
-        block_digits = self._get_block_digits()
-        page_digits = self._get_page_digits()
-        plane_digits = self._get_plane_digits()
-        divisor = 10 ** (block_digits + page_digits + plane_digits)
-        return self.addr // divisor
+        blocks_per_channel = self.config.num_block * self.config.num_pages * self.config.num_plane
+        return self.addr // blocks_per_channel
 
     @property
     def plane(self) -> int:
         """Extract plane from address"""
-        block_digits = self._get_block_digits()
-        page_digits = self._get_page_digits()
-        plane_digits = self._get_plane_digits()
-        addr_without_block = self.addr // (10 ** block_digits)
-        addr_without_page = addr_without_block // (10 ** page_digits)
-        return addr_without_page % (10 ** plane_digits)
+        blocks_per_plane = self.config.num_block * self.config.num_pages
+        return (self.addr // blocks_per_plane) % self.config.num_plane
 
     @property
     def page(self) -> int:
         """Extract page from address"""
-        block_digits = self._get_block_digits()
-        page_digits = self._get_page_digits()
-        addr_without_block = self.addr // (10 ** block_digits)
-        return addr_without_block % (10 ** page_digits)
+        return (self.addr // self.config.num_block) % self.config.num_pages
 
     @property
     def block(self) -> int:
         """Extract block from address"""
-        block_digits = self._get_block_digits()
-        return self.addr % (10 ** block_digits)
+        return self.addr % self.config.num_block
 
     @channel.setter
     def channel(self, value: int):
@@ -134,58 +103,28 @@ class NandAddress(AddressBase):
 
     def is_valid(self) -> bool:
         """Check if address components are within valid ranges"""
-        try:
-            return (0 <= self.channel < self.config.num_channels and
-                    0 <= self.plane < self.config.num_plane and
-                    0 <= self.page < self.config.num_pages and
-                    0 <= self.block < self.config.num_block)
-        except:
+        if (
+            self.config.num_channels <= 0
+            or self.config.num_plane <= 0
+            or self.config.num_pages <= 0
+            or self.config.num_block <= 0
+        ):
             return False
+        total = self.config.num_channels * self.config.num_plane * self.config.num_pages * self.config.num_block
+        return 0 <= self.addr < total
 
 
     def __add__(self, other: int) -> 'NandAddress':
-        """
-        Add an integer to the address with proper carry logic.
-        Creates a new NandAddress instance.
-        """
+        """Add an integer to the address and return a new NandAddress."""
         if not isinstance(other, int):
             raise TypeError(f"Cannot add {type(other)} to NandAddress")
         if other < 0:
             raise ValueError("Cannot add negative value to address")
-
-        # Extract current components
-        block = self.block
-        page = self.page
-        plane = self.plane
-        channel = self.channel
-
-        # Add to block and handle carries
-        block += other
-
-        # Carry to page
-        if block >= self.config.num_block:
-            page += block // self.config.num_block
-            block = block % self.config.num_block
-
-        # Carry to plane
-        if page >= self.config.num_pages:
-            plane += page // self.config.num_pages
-            page = page % self.config.num_pages
-
-        # Carry to channel
-        if plane >= self.config.num_plane:
-            channel += plane // self.config.num_plane
-            plane = plane % self.config.num_plane
-
-        # Check overflow
-        if channel >= self.config.num_channels:
-            raise OverflowError(f"Address overflow: result exceeds maximum address")
-
-        # Create new address
-        new_addr = NandAddress(0, self.config)
-        new_addr.addr = new_addr._encode(channel, plane, page, block)
-
-        return new_addr
+        total = self.config.num_channels * self.config.num_plane * self.config.num_pages * self.config.num_block
+        next_addr = self.addr + other
+        if next_addr >= total:
+            raise OverflowError("Address overflow: result exceeds maximum address")
+        return NandAddress(next_addr, self.config)
 
     def to_block_address(self) -> 'NandBlockAddress':
         """
@@ -215,37 +154,30 @@ class NandBlockAddress(NandAddress):
         super().__init__(addr, config)
 
     def _encode(self, channel: int, plane: int, block: int) -> int:
-        """Encode channel-plane-block into a single address integer (no page)"""
-        block_digits = self._get_block_digits()
-        plane_digits = self._get_plane_digits()
+        """Encode channel-plane-block using continuous mixed-radix layout."""
+        blocks_per_plane = self.config.num_block
+        blocks_per_channel = self.config.num_block * self.config.num_plane
 
         addr = block
-        addr += plane * (10 ** block_digits)
-        addr += channel * (10 ** (block_digits + plane_digits))
-
+        addr += plane * blocks_per_plane
+        addr += channel * blocks_per_channel
         return addr
 
     @property
     def channel(self) -> int:
         """Extract channel from block address"""
-        block_digits = self._get_block_digits()
-        plane_digits = self._get_plane_digits()
-        divisor = 10 ** (block_digits + plane_digits)
-        return self.addr // divisor
+        blocks_per_channel = self.config.num_block * self.config.num_plane
+        return self.addr // blocks_per_channel
 
     @property
     def plane(self) -> int:
         """Extract plane from block address"""
-        block_digits = self._get_block_digits()
-        plane_digits = self._get_plane_digits()
-        addr_without_block = self.addr // (10 ** block_digits)
-        return addr_without_block % (10 ** plane_digits)
+        return (self.addr // self.config.num_block) % self.config.num_plane
 
     @property
     def block(self) -> int:
         """Extract block from block address"""
-        block_digits = self._get_block_digits()
-        return self.addr % (10 ** block_digits)
+        return self.addr % self.config.num_block
 
     @channel.setter
     def channel(self, value: int):
@@ -283,12 +215,10 @@ class NandBlockAddress(NandAddress):
 
     def is_valid(self) -> bool:
         """Check if block address components are within valid ranges"""
-        try:
-            return (0 <= self.channel < self.config.num_channels and
-                    0 <= self.plane < self.config.num_plane and
-                    0 <= self.block < self.config.num_block)
-        except:
+        if self.config.num_channels <= 0 or self.config.num_plane <= 0 or self.config.num_block <= 0:
             return False
+        total = self.config.num_channels * self.config.num_plane * self.config.num_block
+        return 0 <= self.addr < total
 
     def __repr__(self) -> str:
         return (f"NandBlockAddress(addr={self.addr}, "
@@ -296,42 +226,16 @@ class NandBlockAddress(NandAddress):
                 f"block={self.block})")
 
     def __add__(self, other: int) -> 'NandBlockAddress':
-        """
-        Add an integer to the block address with proper carry logic.
-        Creates a new NandBlockAddress instance.
-        """
+        """Add an integer to the block address and return a new NandBlockAddress."""
         if not isinstance(other, int):
             raise TypeError(f"Cannot add {type(other)} to NandBlockAddress")
         if other < 0:
             raise ValueError("Cannot add negative value to address")
-
-        # Extract current components
-        block = self.block
-        plane = self.plane
-        channel = self.channel
-
-        # Add to block and handle carries
-        block += other
-
-        # Carry to plane
-        if block >= self.config.num_block:
-            plane += block // self.config.num_block
-            block = block % self.config.num_block
-
-        # Carry to channel
-        if plane >= self.config.num_plane:
-            channel += plane // self.config.num_plane
-            plane = plane % self.config.num_plane
-
-        # Check overflow
-        if channel >= self.config.num_channels:
-            raise OverflowError(f"Block address overflow: result exceeds maximum address")
-
-        # Create new address
-        new_addr = NandBlockAddress(0, self.config)
-        new_addr.addr = new_addr._encode(channel, plane, block)
-
-        return new_addr
+        total = self.config.num_channels * self.config.num_plane * self.config.num_block
+        next_addr = self.addr + other
+        if next_addr >= total:
+            raise OverflowError("Block address overflow: result exceeds maximum address")
+        return NandBlockAddress(next_addr, self.config)
 
 
 class DramAddressTranslator(AddressTranslatorBase):
