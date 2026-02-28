@@ -1,6 +1,7 @@
 
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import ClassVar, Optional
 
 from nandmachine.simulator.runtime.addr import NandBlockAddress, NandAddress
 from nandmachine.config.config import NandConfig
@@ -110,14 +111,41 @@ class NandFreeTable(BaseFreeTable):
 
     pass 
 
+@dataclass
+class NandFileMeta:
+    file_name: str
+    num_pages: int
+    file_size: int  # bytes
+    permission: int = Permission.READ
+    type: Optional[str] = 'weight'  # weight or kv cache
+    source: Optional[str] = None
+    file_id: int = field(init=False)
+
+    _next_file_id: ClassVar[int] = 0
+
+    def __post_init__(self) -> None:
+        self.file_id = self.__class__._next_file_id
+        self.__class__._next_file_id += 1
+
+    @classmethod
+    def reset_id_counter(cls, start: int = 0) -> None:
+        cls._next_file_id = start
+
+    @classmethod
+    def peek_next_file_id(cls) -> int:
+        return cls._next_file_id
+
+
 
 class NandFileEntry:
-    def __init__(self,file_id:int,nand_pages:list[int]=[],permission=Permission.READ,type:Optional[str]=None) -> None:
-        
-        self.file_id:int = file_id 
-        self.nand_pages:list[int] = nand_pages
-        self.permission = permission        
-        self.type:Optional[str] = type # weight or kv cache
+    def __init__(self, meta: NandFileMeta, nand_pages: Optional[list[int]] = None) -> None:
+        self.meta: NandFileMeta = meta
+        self.nand_pages: list[int] = list(nand_pages) if nand_pages else []
+
+    @property
+    def file_id(self) -> int:
+        return self.meta.file_id
+
     
     @property
     def num_nand_pages(self)->int:
@@ -132,20 +160,18 @@ class NandFileTable:
     
     # 加入一堆 checker 函数， 检索一下 weight 和 kv cache 有没有按照想要的方式分布 
 
-    def __init__(self) :
+    def __init__(self,nand_config: Optional[NandConfig] = None) :
 
+        self.nand_config = nand_config  # TODO 想一下这个怎么约束
+ 
         self.entries:dict[int,NandFileEntry] = {}
-
-        self.next_file_id = 0
         
 
     def get_file_by_id(self,file_id:int)->Optional[NandFileEntry]:
         return self.entries.get(file_id,None)
     
     def get_new_file_id(self):
-        while self.next_file_id in self.entries:
-            self.next_file_id += 1 
-        return self.next_file_id
+        return NandFileMeta.peek_next_file_id()
     
     def add_entry(self,nand_file_entry:NandFileEntry):
         assert nand_file_entry.file_id not in self.entries
@@ -236,15 +262,15 @@ class RAMFreeTable(BaseFreeTable):
 
 
 class DRAMFreeTable(RAMFreeTable):
-    def __init__(self, config):
-        super().__init__(0)
+    def __init__(self, ):
+        super().__init__(100)
 
 
 
 
 class SRAMFreeTable(RAMFreeTable):
-    def __init__(self, config):
-        super().__init__(0)
+    def __init__(self,):
+        super().__init__(100)
 
 
 

@@ -1,8 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
-from Desim.Core import Event
-from nandmachine.commands.macro import MacroOp
+
+from nandmachine.simulator.runtime.tables import DeviceType
 
 
 # @dataclass
@@ -19,6 +18,8 @@ class MemoryBasicOpBase:
     pass 
 
 # 拆分为更细粒度的 Read/Write 然后拼接组合实现功能 
+# 每次读写都是一个 page 不需要手动指定尺寸了
+
 
 @dataclass
 class NandPageRead(MemoryBasicOpBase):
@@ -42,17 +43,22 @@ class SramPageWrite(MemoryBasicOpBase):
     addr:int
 
 
+@dataclass
 class DataForward:
+    """
+    Data forwarding operation between hardware endpoints.
 
-    NandToBase = 0x1
-    BaseToXPU= 0x2
-
-    BaseToNand = 0x3
-    XPUToBase = 0x4
-
-
-    def __init__(self,direction):
-        self.direction = direction  
+    约定：
+    - `src_type` / `dst_type` 描述端点类型（如 nand/base/xpu/sram）
+    - `src` / `dst` 保存端点值：
+      - nand 端通常传物理地址（int）
+      - base/xpu/sram 端通常传 channel（int）
+    - src/dst 可以为 None，由执行器回退到上下文 channel
+    """
+    src_type: DeviceType
+    dst_type: DeviceType
+    src: int | None = None
+    dst: int | None = None
 
  
 
@@ -61,7 +67,10 @@ class MemoryOperation:
 
     def __init__(self, *args):
         # Support both: MemoryOperation(op1, op2, op3) and MemoryOperation([op1, op2, op3])
-        self.op_list:list[DataForward|MemoryBasicOpBase] = list(args)
+        if len(args) == 1 and isinstance(args[0], list):
+            self.op_list: list[DataForward | MemoryBasicOpBase] = args[0]
+        else:
+            self.op_list: list[DataForward | MemoryBasicOpBase] = list(args)
 
         
 
@@ -72,7 +81,6 @@ class NandRequest:
 
     def __init__(self,*args):
         if len(args) == 1 and isinstance(args[0],list):
-            self.requests = args[0]
+            self.operations = args[0]
         else:
-            self. requests:list[MemoryOperation] = list[args]
-
+            self.operations: list[MemoryOperation] = list(args)

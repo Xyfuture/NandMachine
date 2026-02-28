@@ -17,6 +17,13 @@ class NandConfig(MemoryConfig):
     tWrite: float 
     tErase: float 
 
+    page_size:int # KB
+
+    @property
+    def page_size_bytes(self) -> int:
+        """Page size in bytes."""
+        return self.page_size * 1024
+
 
 @dataclass
 class DramConfig(MemoryConfig):

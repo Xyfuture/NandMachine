@@ -2,13 +2,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from typing import Optional
+from typing import TypeAlias
+
+
+LogicAddr:TypeAlias = int
+
 
 
 @dataclass
 class MacroOp:
     id: int = field(init=False)
-    input_ops:Optional[list[MacroOp]] = None 
+    input_ops:list[MacroOp] = field(default_factory=list,init=False) 
 
 
     _global_id_counter: ClassVar[int] = 0
@@ -44,12 +48,12 @@ class RuntimeCall(MacroOp):
 class NandMmap(RuntimeCall):
     file_id:int 
 
-    pre_alloc_logic_addr:int 
+    pre_alloc_logic_addr:LogicAddr 
 
 
 @dataclass
 class NandMunmap(RuntimeCall):
-    addr:int 
+    addr:LogicAddr 
 
 
 @dataclass
@@ -77,14 +81,14 @@ class NandGroupWrite(RuntimeCall):
 # prefetch -- read only 
 @dataclass 
 class SramPrefetch(RuntimeCall):
-    prefetch_addr:int  # logic addr
+    prefetch_addr:LogicAddr  # logic addr
     num_pages:int 
 
-    pre_alloc_logic_addr:int     
+    pre_alloc_logic_addr:LogicAddr     
 
 @dataclass
 class SramPrefetchRelease(RuntimeCall):
-    addr:int  
+    addr:LogicAddr  
 
 
 # ------ SRAM Operation --------
@@ -93,11 +97,11 @@ class SramPrefetchRelease(RuntimeCall):
 class  SramMalloc(RuntimeCall):
     num_pages:int  
 
-    pre_alloc_logic_addr: int 
+    pre_alloc_logic_addr: LogicAddr 
 
 @dataclass
 class SramFree(RuntimeCall):
-    addr:int
+    addr:LogicAddr
 
 
 
@@ -112,11 +116,22 @@ class DramFree(RuntimeCall):
     pass 
 
 
+# -------- Read/Write Operation -------
+
+
+
 # ------- xPU Operation ---------
 
 @dataclass
 class MatMul(MacroOp):
-    pass 
+ 
+
+    dim:tuple[int,int,int]
+
+    addr:LogicAddr
+
+    weight_bits:int 
+
 
 
 

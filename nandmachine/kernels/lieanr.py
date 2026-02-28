@@ -36,14 +36,18 @@ class LinearNandKernel(NandKernelBase):
         
         # pass  -- 运算
 
+        self.command_buffer.append(
+            MatMul((64,4096,4096),sram_ptr,8)
+        )
+
 
 
         # 额外的通信操作
-        if isinstance(node.meta['target_obj'],RowParallelLinear):
-            
+        if isinstance(node.meta['target_obj'],RowParallelLinear):            
             pass 
         
-        self.command_buffer.append(
-            SramPrefetchRelease(sram_ptr)
-        )
+        # self.command_buffer.append(
+        #     SramPrefetchRelease(sram_ptr)
+        # )
 
+    

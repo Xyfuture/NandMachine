@@ -1,6 +1,6 @@
 from Desim.Core import SimModule
 from nandmachine.commands.macro import MacroOp, SramPrefetch
-from nandmachine.simulator.hardware.utils import MarcoOpSlot
+from nandmachine.simulator.hardware.utils import DepSlot
 
 
 
@@ -10,8 +10,8 @@ class Accelerator(SimModule):
 
         self.prologue_commands:list[MacroOp] = None 
 
-        self.prefetch_command_queue:list[MarcoOpSlot] = []
-        self.normal_command_queue:list[MarcoOpSlot] = []
+        self.prefetch_command_queue:list[DepSlot] = []
+        self.normal_command_queue:list[DepSlot] = []
 
         pass 
 
@@ -23,10 +23,10 @@ class Accelerator(SimModule):
         self.prefetch_command_queue = []
         self.normal_command_queue = []
 
-        prev_hw_op: MarcoOpSlot = None
+        prev_hw_op: DepSlot = None
 
         for macro_op in commands:
-            hw_op = MarcoOpSlot(macro_op=macro_op)
+            hw_op = DepSlot(payload=macro_op)
 
             # Link to previous op (head-to-tail chain)
             if prev_hw_op is not None:

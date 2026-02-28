@@ -19,6 +19,7 @@
 @nandmachine\simulator\hardware\nand.py 这里面放置的是 Nand 仿真的核心逻辑
 @nandmachine\simulator\runtime\addr.py 这里面放置的是 nand 地址相关的操作 
 @nandmachine\config\config.py 这里放置了一些nand 参数的配置 
+@nandmachine/commands/micro.py 这里面放置了一些 nand 需要使用的指令
 
 
 ## Nand 的组织结构
@@ -44,7 +45,9 @@
 
 ## 实现相关的要求 
 代码实现在  @nandmachine\simulator\hardware\nand.py 中 填充 class NandSimCore 相关内容
-- 实现的每个函数都要与我讨论, 不要实现没用的代码
+- 你需要尽可能和我讨论一下实现的细节，拿不准的地方都要和我询问
+- 主要是实现 class NandSimCore 的功能，如果需要动其他的 class 需要和我讨论，对于NandController 的改动以注释的方式给出来
+- 你先告诉我你在 NandSimCore 中你想要实现出哪些 method，给我看一下
 
 
 

@@ -8,7 +8,7 @@ from nandmachine.config.config import NandConfig
 from nandmachine.frontend.core.passes.base import GraphPass
 from nandmachine.frontend.network.torch_kernels import LinearBase
 from nandmachine.simulator.runtime.addr import NandAddress, NandBlockAddress
-from nandmachine.simulator.runtime.tables import NandFileEntry, NandFileTable, NandFreeTable, Permission
+from nandmachine.simulator.runtime.tables import NandFileEntry, NandFileMeta, NandFileTable, NandFreeTable, Permission
 
 
 class NandTableManager:
@@ -24,9 +24,6 @@ class NandTableManager:
         pass 
 
     def create_new_file(self,num_pages)->int:
-
-        cur_file_id = self.nand_file_table.get_new_file_id()
-
         allocated_pages = []
 
         # 首先更新 channel，再更新 plane，最后更新 page
@@ -39,13 +36,21 @@ class NandTableManager:
             
             allocated_pages.append(next_addr)
 
-            self.next_page_addr += 1
-
-        file_entry = NandFileEntry(cur_file_id,allocated_pages,Permission.READ,'weight')
+        next_id = NandFileMeta.peek_next_file_id()
+        page_size_bytes = self.config.page_size_bytes if self.config is not None else 4096
+        file_meta = NandFileMeta(
+            file_name=f"file_{next_id}",
+            num_pages=num_pages,
+            file_size=num_pages * page_size_bytes,
+            permission=Permission.READ,
+            type='weight',
+            source='mapper',
+        )
+        file_entry = NandFileEntry(file_meta, allocated_pages)
 
         self.nand_file_table.add_entry(file_entry)
 
-        return cur_file_id 
+        return file_entry.file_id 
     
 
         
@@ -82,5 +87,3 @@ class MapperPass(GraphPass):
         # graph.meta['nand_file_table'] = 
 
         
-
-
