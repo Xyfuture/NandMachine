@@ -93,8 +93,10 @@ class RuntimeManager():
         self.nand_free_table:NandFreeTable = NandFreeTable(self.nand_config)
 
 
-        self.dram_free_table:DRAMFreeTable = DRAMFreeTable()
-        self.sram_free_table:SRAMFreeTable = SRAMFreeTable()
+        # Keep enough fast-memory pages for end-to-end hw pipeline simulation.
+        default_fastmem_pages = self.nand_config.num_channels * self.nand_config.num_plane * self.nand_config.num_pages
+        self.dram_free_table:DRAMFreeTable = DRAMFreeTable(default_fastmem_pages)
+        self.sram_free_table:SRAMFreeTable = SRAMFreeTable(default_fastmem_pages)
 
         self.page_table: PageTable = PageTable(page_size=self.nand_config.page_size_bytes)
 
@@ -129,7 +131,7 @@ class RuntimeManager():
         nand_file_entry:Optional[NandFileEntry] = self.nand_file_table.get_file_by_id(file_id)
         
         if not nand_file_entry:
-            assert False
+            raise ValueError(f"Nand file not found: file_id={file_id}")
         
 
         # 创建 nand_mmap_entry
@@ -138,13 +140,13 @@ class RuntimeManager():
 
         nand_mmap_entry = NandMmapEntry(
             logic_addr_base,
-            nand_file_entry.num_nand_pages,
+            nand_file_entry.num_nand_pages * self.nand_config.page_size_bytes,
             file_id,
             Permission.READ,
             self.nand_config.page_size_bytes,
         )
-        
-        self.resource_usage_table.add_entry(nand_mmap_entry)
+        if not self.resource_usage_table.add_entry(nand_mmap_entry):
+            raise RuntimeError(f"NAND mmap resource conflict at logical addr {logic_addr_base}")
 
 
         # 开始映射
@@ -161,9 +163,11 @@ class RuntimeManager():
 
         nand_mmap_entry = self.resource_usage_table.get_entry(logic_addr_base)
 
-        assert isinstance(nand_mmap_entry,NandMmapEntry)
+        if not isinstance(nand_mmap_entry, NandMmapEntry):
+            raise ValueError(f"Nand mmap entry not found at addr {logic_addr_base}")
 
-        for i in range(nand_mmap_entry.size):
+        num_pages = nand_mmap_entry.get_page_count()
+        for i in range(num_pages):
             self.page_table.unmap_page(logic_addr_base+i)
         
         self.resource_usage_table.remove_entry(logic_addr_base)
@@ -198,10 +202,11 @@ class RuntimeManager():
                     unmap_page(page)
                 for phy_page in allocated_sram_pages:
                     sram_free(phy_page)
-                assert False
+                raise RuntimeError(f"Cannot prefetch from unmapped source page: {src_page}")
 
             src_device_type, _ = src_phy_info
-            assert src_device_type == DeviceType.NAND
+            if src_device_type != DeviceType.NAND:
+                raise RuntimeError(f"Prefetch source must be NAND, got {src_device_type}")
 
             sram_phy_page = sram_allocate()
             if sram_phy_page == -1:
@@ -209,7 +214,7 @@ class RuntimeManager():
                     unmap_page(page)
                 for phy_page in allocated_sram_pages:
                     sram_free(phy_page)
-                assert False
+                raise RuntimeError("No free SRAM page for prefetch")
 
             allocated_sram_pages.append(sram_phy_page)
 
@@ -218,14 +223,14 @@ class RuntimeManager():
                     unmap_page(page)
                 for phy_page in allocated_sram_pages:
                     sram_free(phy_page)
-                assert False
+                raise RuntimeError(f"Failed to map destination logical page: {dst_page}")
 
             mapped_dst_pages.append(dst_page)
             source_mapping[dst_page] = src_page
 
         prefetch_entry = PrefetchEntry(
             dst_base,
-            num_pages,
+            num_pages * self.nand_config.page_size_bytes,
             source_mapping,
             self.nand_config.page_size_bytes,
         )
@@ -235,7 +240,7 @@ class RuntimeManager():
                 unmap_page(page)
             for phy_page in allocated_sram_pages:
                 sram_free(phy_page)
-            assert False
+            raise RuntimeError(f"Prefetch resource conflict at logical addr {dst_base}")
 
 
 

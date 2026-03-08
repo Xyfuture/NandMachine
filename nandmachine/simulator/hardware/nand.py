@@ -19,6 +19,7 @@ from nandmachine.commands.micro import (
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.utils import DepSlot
 from nandmachine.simulator.runtime.addr import NandAddress
+from nandmachine.simulator.runtime.tables import DeviceType
 
 
 
@@ -157,17 +158,23 @@ class NandSimCore:
         - base -> xpu
         """
         channel = self._resolve_forward_channel(forward_op, last_channel)
+        src_type = self._normalize_endpoint_type(forward_op.src_type)
+        dst_type = self._normalize_endpoint_type(forward_op.dst_type)
 
-        if forward_op.src_type == "nand" and forward_op.dst_type == "base":
+        if src_type == "nand" and dst_type == "base":
             end_time = self._simulate_nand_to_base(channel, start_time)
             return end_time, channel
 
-        if forward_op.src_type == "base" and forward_op.dst_type == "xpu":
+        if src_type == "base" and dst_type == "xpu":
+            end_time = self._simulate_base_to_xpu(channel, start_time)
+            return end_time, channel
+
+        if src_type == "sram" and dst_type == "xpu":
             end_time = self._simulate_base_to_xpu(channel, start_time)
             return end_time, channel
 
         raise NotImplementedError(
-            f"Unsupported data forward path: {forward_op.src_type}->{forward_op.dst_type}"
+            f"Unsupported data forward path: {src_type}->{dst_type}"
         )
 
     def _resolve_forward_channel(
@@ -205,21 +212,34 @@ class NandSimCore:
 
         return resolved_channel
 
-    def _resolve_endpoint_channel(self, endpoint_type: str, endpoint_value: Optional[int]) -> Optional[int]:
+    def _resolve_endpoint_channel(
+        self,
+        endpoint_type: object,
+        endpoint_value: Optional[int],
+    ) -> Optional[int]:
         if endpoint_value is None:
             return None
 
-        if endpoint_type == "nand":
+        normalized_type = self._normalize_endpoint_type(endpoint_type)
+
+        if normalized_type == "nand":
             channel, _ = self._decode_nand_addr(endpoint_value)
             return channel
 
-        if endpoint_type in {"base", "xpu", "sram"}:
+        if normalized_type in {"base", "xpu", "sram"}:
             if not isinstance(endpoint_value, int):
-                raise TypeError(f"Endpoint channel must be int for {endpoint_type}")
+                raise TypeError(f"Endpoint channel must be int for {normalized_type}")
             self._validate_channel(endpoint_value)
             return endpoint_value
 
         raise NotImplementedError(f"Unsupported endpoint type: {endpoint_type}")
+
+    def _normalize_endpoint_type(self, endpoint_type: object) -> str:
+        if isinstance(endpoint_type, DeviceType):
+            return endpoint_type.value
+        if isinstance(endpoint_type, str):
+            return endpoint_type
+        raise TypeError(f"Unsupported endpoint type object: {type(endpoint_type)}")
 
     def _simulate_nand_page_read(self, addr: int, start_time: float) -> tuple[float, int]:
         """

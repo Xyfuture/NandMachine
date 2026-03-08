@@ -1,8 +1,8 @@
 import math
-from Desim import Event, SimModule, SimSession, SimTime
+from Desim import SimModule, SimSession, SimTime
 
 from nandmachine.commands.macro import MacroOp, MatMul, NandMmap, RuntimeCall, SramPrefetch
-from nandmachine.commands.micro import DataForward, NandPageRead, NandRequest, SramPageWrite
+from nandmachine.commands.micro import DataForward, MemoryOperation, NandPageRead, NandRequest, SramPageRead
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
@@ -63,25 +63,26 @@ class PerfetchEngine(SimModule):
             prefetch_addr = macro_op.prefetch_addr
             num_pages = macro_op.num_pages
 
-            memory_operation_list = [] 
+            memory_operation_list: list[MemoryOperation] = []
 
             for i in range(num_pages):
                 phy_addr_info = self.runtime_manager.page_table.translate(prefetch_addr+i)            
                 if not phy_addr_info:
-                    assert False
+                    raise RuntimeError(f"Cannot translate prefetch source page {prefetch_addr + i}")
                 device_type , nand_addr = phy_addr_info
-                assert device_type == DeviceType.NAND
+                if device_type != DeviceType.NAND:
+                    raise RuntimeError(f"Prefetch source must be NAND, got {device_type}")
 
                 memory_operation_list.append(
-                    [   
+                    MemoryOperation(
                         NandPageRead(nand_addr),
-                        DataForward(DeviceType.NAND,DeviceType.SRAM,nand_addr,0),
-                        SramPageWrite(0),
-                    ]
+                        DataForward("nand", "base", nand_addr, None),
+                    )
                 )
             nand_request = NandRequest(memory_operation_list)
 
             return nand_request
+        raise TypeError(f"Unsupported macro op for prefetch engine: {type(macro_op)}")
                 
     def load_command_queue(self,command_queue:list[DepSlot]):
 
@@ -154,22 +155,32 @@ class ComputeEngine(SimModule):
             num_pages = (weight_bytes + self.config.page_size_bytes - 1) // self.config.page_size_bytes
 
 
-            memory_operation_list = []
+            memory_operation_list: list[MemoryOperation] = []
             for i in range(num_pages):
                 phy_addr_info = self.runtime_manager.page_table.translate(logic_addr_base+i)
 
                 if not phy_addr_info:
-                    assert False
+                    raise RuntimeError(f"Cannot translate matmul page {logic_addr_base + i}")
 
-                device_type, nand_addr = phy_addr_info
+                device_type, phy_addr = phy_addr_info
 
-                memory_operation_list.append(
-                    [
-                        NandPageRead(nand_addr),
-                        DataForward(DeviceType.NAND,DeviceType.SRAM,nand_addr,0),
-                        # TODO Device type 添加 XPU 的支持
-                    ]
-                )
+                if device_type == DeviceType.NAND:
+                    memory_operation_list.append(
+                        MemoryOperation(
+                            NandPageRead(phy_addr),
+                            DataForward("nand", "base", phy_addr, None),
+                            DataForward("base", "xpu", None, None),
+                        )
+                    )
+                elif device_type == DeviceType.SRAM:
+                    memory_operation_list.append(
+                        MemoryOperation(
+                            SramPageRead(phy_addr),
+                            DataForward("base", "xpu", None, None),
+                        )
+                    )
+                else:
+                    raise NotImplementedError(f"Unsupported matmul input device: {device_type}")
 
             nand_request = NandRequest(memory_operation_list)
 
@@ -183,7 +194,7 @@ class ComputeEngine(SimModule):
                 SimModule.wait_time(compute_finish_time - SimSession.sim_time)
 
         else:
-            assert False
+            raise TypeError(f"Unsupported macro op in compute engine: {type(macro_op)}")
             
 
 
@@ -217,7 +228,7 @@ class ManageEngine(SimModule):
             if isinstance(macro_op,NandMmap):
                 self.runtime_manager.NandMmapHandler(macro_op)
             else:
-                assert False
+                raise NotImplementedError(f"Unsupported runtime op: {type(macro_op)}")
 
             macro_op_slot.is_finished = True
             macro_op_slot.finish_event.notify(SimTime(1))
@@ -243,8 +254,6 @@ class xPU(SimModule):
         self.compute_engine = ComputeEngine(self.runtime_manager,self.nand_controller,self.nand_config)
         self.prefetch_engine = PerfetchEngine(self.runtime_manager,self.nand_controller)
         self.manage_engine = ManageEngine(self.runtime_manager)
-
-        pass 
 
 
     def load_command(self,command_list:list[MacroOp]):
@@ -278,5 +287,3 @@ class xPU(SimModule):
         self.prefetch_engine.load_command_queue(prefetch_engine_slot_list)
         self.compute_engine.load_command_queue(compute_engine_slot_list)
         self.manage_engine.load_command_queue(manage_engine_slot_list)
-
-

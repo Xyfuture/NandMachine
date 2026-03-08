@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
 
 from nandmachine.simulator.runtime.tables import DeviceType
 
@@ -55,12 +56,14 @@ class DataForward:
       - base/xpu/sram 端通常传 channel（int）
     - src/dst 可以为 None，由执行器回退到上下文 channel
     """
-    src_type: DeviceType
-    dst_type: DeviceType
+    src_type: "EndpointType | DeviceType"
+    dst_type: "EndpointType | DeviceType"
     src: int | None = None
     dst: int | None = None
 
  
+EndpointType: TypeAlias = Literal["nand", "sram", "base", "xpu"]
+
 
 class MemoryOperation:
     # 一个 memory operation 是一堆内存操作的集合 -- 顺序发生
@@ -81,6 +84,13 @@ class NandRequest:
 
     def __init__(self,*args):
         if len(args) == 1 and isinstance(args[0],list):
-            self.operations = args[0]
+            operations = list(args[0])
         else:
-            self.operations: list[MemoryOperation] = list(args)
+            operations = list(args)
+
+        for op in operations:
+            if not isinstance(op, MemoryOperation):
+                raise TypeError(
+                    f"NandRequest expects MemoryOperation items, got {type(op)}"
+                )
+        self.operations: list[MemoryOperation] = operations

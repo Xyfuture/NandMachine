@@ -262,15 +262,15 @@ class RAMFreeTable(BaseFreeTable):
 
 
 class DRAMFreeTable(RAMFreeTable):
-    def __init__(self, ):
-        super().__init__(100)
+    def __init__(self, total_pages: int = 100):
+        super().__init__(total_pages)
 
 
 
 
 class SRAMFreeTable(RAMFreeTable):
-    def __init__(self,):
-        super().__init__(100)
+    def __init__(self, total_pages: int = 100):
+        super().__init__(total_pages)
 
 
 
