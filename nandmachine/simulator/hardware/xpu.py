@@ -206,36 +206,18 @@ class ComputeEngine(SimModule):
 
 
 
-class ManageEngine(SimModule):
-    def __init__(self,runtime_manager:RuntimeManager):
+class TransferEgine(SimModule):
+    def __init__(self):
         super().__init__()
 
-        self.runtime_manager:RuntimeManager = runtime_manager 
-        self.command_queue:list[DepSlot[RuntimeCall]] = []
-        
+
         self.register_coroutine(self.process)
-
-
-
+    
     def process(self):
-        for macro_op_slot in self.command_queue:
-            for input_slot in macro_op_slot.input_slots:
-                if not input_slot.is_finished:
-                    SimModule.wait(input_slot.finish_event)
+        pass 
+    
 
-            macro_op = macro_op_slot.payload
-            
-            if isinstance(macro_op,NandMmap):
-                self.runtime_manager.NandMmapHandler(macro_op)
-            else:
-                raise NotImplementedError(f"Unsupported runtime op: {type(macro_op)}")
 
-            macro_op_slot.is_finished = True
-            macro_op_slot.finish_event.notify(SimTime(1))
-
-    def load_command_queue(self,command_queue:list[DepSlot]):
-
-        self.command_queue = command_queue
 
 
 
@@ -253,7 +235,6 @@ class xPU(SimModule):
         # 异步执行的 engine
         self.compute_engine = ComputeEngine(self.runtime_manager,self.nand_controller,self.nand_config)
         self.prefetch_engine = PerfetchEngine(self.runtime_manager,self.nand_controller)
-        self.manage_engine = ManageEngine(self.runtime_manager)
 
 
     def load_command(self,command_list:list[MacroOp]):

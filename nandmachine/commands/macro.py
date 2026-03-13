@@ -30,12 +30,6 @@ class MacroOp:
 # Runtime 之前的 kernel
 
 
-@dataclass
-class NandCreateFile(MacroOp):
-    # 创建权重文件 -- 仅仅供 mapper 使用
-    # 需要单独的指令吗
-    pass 
-
 
 @dataclass
 class RuntimeCall(MacroOp):
@@ -44,76 +38,35 @@ class RuntimeCall(MacroOp):
 
 
 # ------  Nand Operation ------
-@dataclass
-class NandMmap(RuntimeCall):
-    file_id:int 
-
-    pre_alloc_logic_addr:LogicAddr 
 
 
-@dataclass
-class NandMunmap(RuntimeCall):
-    addr:LogicAddr 
-
-
-@dataclass
-class NandGroupArrange(RuntimeCall):
-    pass 
-
-
-@dataclass
-class NandGroupMmap(RuntimeCall):
-    pass 
-
-
-
-@dataclass
-class NandGroupMunmap(RuntimeCall):
-    pass
-
-
-
-@dataclass 
-class NandGroupWrite(RuntimeCall):
-    pass 
+ 
 
 
 # prefetch -- read only 
 @dataclass 
 class SramPrefetch(RuntimeCall):
-    prefetch_addr:LogicAddr  # logic addr
-    num_pages:int 
+    # prefetch_addr:LogicAddr  # logic addr
+    # num_pages:int 
 
-    pre_alloc_logic_addr:LogicAddr     
+    # pre_alloc_logic_addr:LogicAddr     
+    prefetch_size:int  # bytes 
+
 
 @dataclass
 class SramPrefetchRelease(RuntimeCall):
-    addr:LogicAddr  
+    # addr:LogicAddr  
+    pass 
 
 
 # ------ SRAM Operation --------
 
-@dataclass
-class  SramMalloc(RuntimeCall):
-    num_pages:int  
 
-    pre_alloc_logic_addr: LogicAddr 
-
-@dataclass
-class SramFree(RuntimeCall):
-    addr:LogicAddr
 
 
 
 # ------- DRAM Operation ------ 
-@dataclass
-class DramMalloc(RuntimeCall):
-    pass 
 
-
-@dataclass
-class DramFree(RuntimeCall):
-    pass 
 
 
 # -------- Read/Write Operation -------
@@ -123,14 +76,42 @@ class DramFree(RuntimeCall):
 # ------- xPU Operation ---------
 
 @dataclass
-class MatMul(MacroOp):
- 
+class MatMulOp(MacroOp):
 
-    dim:tuple[int,int,int]
+    shape:tuple[int,int,int] # m,k,n
 
-    addr:LogicAddr
+    # addr:LogicAddr
 
-    weight_bits:int 
+    # weight_bits:int 
+
+
+@dataclass 
+class FlashAttnOp(MacroOp):
+    qk_bmm_shape:tuple[int,int,int,int] # b,m,k,n 
+    sv_bmm_shape:tuple[int,int,int,int]
+    softmax_shape:tuple[int,int] # batch, length 
+
+
+@dataclass 
+class VectorOp(MacroOp):
+    vector_op_type:str
+
+    vector_shape:list[int]
+
+
+# --------- Transfer Operations -------
+
+@dataclass 
+class AllReduceOp(MacroOp):
+    pass 
+
+
+@dataclass 
+class All2AllOp(MacroOp):
+    pass 
+
+
+
 
 
 
