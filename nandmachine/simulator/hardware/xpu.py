@@ -1,7 +1,7 @@
 import math
 from Desim import SimModule, SimSession, SimTime
 
-from nandmachine.commands.macro import MacroOp, MatMul, NandMmap, RuntimeCall, SramPrefetch
+from nandmachine.commands.macro import MacroOp, MatMul, NandMmap, RuntimeCall, SramPrefetch, SramPrefetchRelease
 from nandmachine.commands.micro import DataForward, MemoryOperation, NandPageRead, NandRequest, SramPageRead
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.nand import NandController
@@ -150,21 +150,24 @@ class xPU(SimModule):
 
         prefetch_engine_slot_list:list[DepSlot[MacroOp]] = []
         compute_engine_slot_list:list[DepSlot[MacroOp]] = []
-        manage_engine_slot_list:list[DepSlot[MacroOp]] = []
 
+        slot_map:dict[MacroOp,DepSlot[MacroOp]] = {}
 
-        pre_slot = None 
         for command in command_list:
             slot = DepSlot(command)
-            if pre_slot:
-                slot.input_slots = [pre_slot]
-            pre_slot = slot
+            slot_map[command] = slot
+
+        for command in command_list:
+            input_slots = [slot_map[input_op] for input_op in command.input_ops]
+            slot_map[command].input_slots = input_slots
+
+        for command,slot in slot_map.items():
 
             # 分发到不同的 engine 中 
             if isinstance(command,SramPrefetch):
                 prefetch_engine_slot_list.append(slot)
-            elif isinstance(command,(NandMmap)):
-                manage_engine_slot_list.append(slot)
+            elif isinstance(command,SramPrefetchRelease):
+                continue
             else:
                 compute_engine_slot_list.append(slot)
         

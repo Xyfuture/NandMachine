@@ -40,7 +40,7 @@ class RuntimeCall(MacroOp):
 
 @dataclass
 class SramPrefetch(RuntimeCall):
-    num_pages: int
+    num_prefetch_pages: int
 
 
 @dataclass
