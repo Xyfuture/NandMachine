@@ -180,7 +180,7 @@ class RuntimeManager():
 
         src_base = command.prefetch_addr
         dst_base = command.pre_alloc_logic_addr
-        num_pages = command.num_pages
+        num_pages = command.num_prefetch_pages
 
         allocated_sram_pages: list[int] = []
         mapped_dst_pages: list[int] = []

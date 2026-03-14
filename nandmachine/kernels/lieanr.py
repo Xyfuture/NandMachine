@@ -1,10 +1,14 @@
+import math
+
 import torch.fx as fx
 
 from nandmachine.commands.macro import * 
+from nandmachine.config.config import NandConfig
 from nandmachine.frontend.core.graph.base import NxGraph
 from nandmachine.frontend.network.torch_kernels import RowParallelLinear
 from nandmachine.kernels.base import NandKernelBase
 from nandmachine.kernels.utils import PageTableAddrPreAllocator
+
 
 
 
@@ -15,39 +19,50 @@ class LinearNandKernel(NandKernelBase):
         super().__init__()
 
 
+    @classmethod
     def lowering(
-            self,
-            node:fx.Node,
-
+            cls,
+            m: int,
+            k: int,
+            n: int,
+            weight_bits: int,
+            input_bits: int,
+            nand_config: NandConfig,
     ):
-        # 开放资源
-        nand_file_mmap_ptr = self.pre_addr_allocator.allocate(100)
-        # 需要提前拿到 file id 从 node 中获取， 通过 MapperPass 来记录这个 file_id 
-        self.global_command_buffer.append(
-            NandMmap(1,nand_file_mmap_ptr)
-        )
+        macro_op_list: list[MacroOp] = []
+        sram_threshold = nand_config.sram_threshold * 1024 # KB->Bytes
 
-        # prefetch 
+        n_slice = sram_threshold // (k * (weight_bits // 8))                                                                                                  
+        num_splits = math.ceil(n / n_slice)                                                                                                                   
+                                                                                                                                                                
+        n_shape_list = []                                                                                                                                     
+        for i in range(num_splits):                                                                                                                           
+            n_i = min(n_slice, n - i * n_slice)                                                                                                               
+            n_shape_list.append(n_i) 
 
-        sram_ptr = self.pre_addr_allocator.allocate(100)
-        self.command_buffer.append(
-            SramPrefetch(nand_file_mmap_ptr,100,sram_ptr)
-        )        
+
+        for cur_n in n_shape_list:
+            prefetch_pages = math.ceil( ((k*cur_n*weight_bits+7)//8)/ nand_config.page_size )
+            
+            sram_prefetch = SramPrefetch(prefetch_pages)
+
+            matmul = MatMulOp((m,k,cur_n),weight_bits=weight_bits).with_inputs(sram_prefetch)
+
+            sram_release = SramPrefetchRelease().with_inputs(matmul)
+
+            macro_op_list.extend([
+                sram_prefetch,
+                matmul,
+                sram_release,
+            ])
+
+
+        return macro_op_list
+
+
+
+
+
         
-        # pass  -- 运算
-
-        self.command_buffer.append(
-            MatMul((64,4096,4096),sram_ptr,8)
-        )
-
-
-
-        # 额外的通信操作
-        if isinstance(node.meta['target_obj'],RowParallelLinear):            
-            pass 
-        
-        # self.command_buffer.append(
-        #     SramPrefetchRelease(sram_ptr)
-        # )
 
     

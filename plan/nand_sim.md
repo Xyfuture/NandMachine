@@ -78,3 +78,12 @@ NandController 类来自
 NandController 接口
 - request 是 一堆 page 级别的访问治理， 但是一次一个组 level --> 需要定义新的接口
 - 
+
+
+
+
+
+
+# 简易版本
+
+

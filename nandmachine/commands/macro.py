@@ -1,23 +1,18 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import ClassVar
-
-from typing import TypeAlias
+from typing import ClassVar, TypeAlias
 
 
-LogicAddr:TypeAlias = int
-
+LogicAddr: TypeAlias = int
 
 
 @dataclass
 class MacroOp:
     id: int = field(init=False)
-    input_ops:list[MacroOp] = field(default_factory=list,init=False) 
-
+    input_ops: list[MacroOp] = field(default_factory=list, init=False)
 
     _global_id_counter: ClassVar[int] = 0
-
-
 
     @classmethod
     def _next_id(cls) -> int:
@@ -27,110 +22,76 @@ class MacroOp:
     def __post_init__(self) -> None:
         self.id = self._next_id()
 
-# Runtime 之前的 kernel
+    def with_inputs(self, *ops: MacroOp) -> MacroOp:
+        self.input_ops = list(ops)
+        return self
 
-
+    def add_inputs(self, *ops: MacroOp) -> MacroOp:
+        self.input_ops.extend(ops)
+        return self
 
 @dataclass
 class RuntimeCall(MacroOp):
-    pass 
+    pass
 
 
 
-# ------  Nand Operation ------
+# -------- Prefetch Operations ----------- 
 
-
- 
-
-
-# prefetch -- read only 
-@dataclass 
+@dataclass
 class SramPrefetch(RuntimeCall):
-    # prefetch_addr:LogicAddr  # logic addr
-    # num_pages:int 
-
-    # pre_alloc_logic_addr:LogicAddr     
-    prefetch_size:int  # bytes 
+    num_pages: int
 
 
 @dataclass
 class SramPrefetchRelease(RuntimeCall):
-    # addr:LogicAddr  
-    pass 
+    pass
 
-
-# ------ SRAM Operation --------
-
-
-
-
-
-# ------- DRAM Operation ------ 
-
-
-
-# -------- Read/Write Operation -------
-
-
-
-# ------- xPU Operation ---------
-
+# -------- Compute Operations ---------
 @dataclass
 class MatMulOp(MacroOp):
+    dim: tuple[int, int, int]
+    weight_bits: int
 
-    shape:tuple[int,int,int] # m,k,n
-
-    # addr:LogicAddr
-
-    # weight_bits:int 
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.dim
 
 
-@dataclass 
+@dataclass
 class FlashAttnOp(MacroOp):
-    qk_bmm_shape:tuple[int,int,int,int] # b,m,k,n 
-    sv_bmm_shape:tuple[int,int,int,int]
-    softmax_shape:tuple[int,int] # batch, length 
+    qk_bmm_shape: tuple[int, int, int, int]
+    sv_bmm_shape: tuple[int, int, int, int]
+    softmax_shape: tuple[int, int]
 
 
-@dataclass 
+@dataclass
 class VectorOp(MacroOp):
-    vector_op_type:str
+    vector_op_type: str
+    vector_shape: list[int]
 
-    vector_shape:list[int]
 
+# ---------- Transfer Operationss ------------
 
-# --------- Transfer Operations -------
-
-@dataclass 
+@dataclass
 class AllReduceOp(MacroOp):
-    pass 
+    pass
 
 
-@dataclass 
+@dataclass
 class All2AllOp(MacroOp):
-    pass 
-
-
-
-
-
-
+    pass
 
 
 __all__ = [
+    "LogicAddr",
     "MacroOp",
     "RuntimeCall",
-    "NandMmap",
-    "NandMunmap",
-    "NandGroupArrange",
-    "NandGroupMmap",
-    "NandGroupMunmap",
-    "NandGroupWrite",
     "SramPrefetch",
     "SramPrefetchRelease",
-    "SramMalloc",
-    "SramFree",
-    "DramMalloc",
-    "DramFree",
-    "MatMul",
+    "MatMulOp",
+    "FlashAttnOp",
+    "VectorOp",
+    "AllReduceOp",
+    "All2AllOp",
 ]

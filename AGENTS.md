@@ -1,36 +1,21 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Core package: `nandmachine/`.
-- Simulator logic: `nandmachine/simulator/` (`hardware/`, `runtime/`, `entry_point.py`).
-- Frontend graph/passes: `nandmachine/frontend/core/` and `nandmachine/frontend/network/`.
-- Command abstractions: `nandmachine/commands/` (`micro.py`, `macro.py`).
-- Kernel prototypes: `nandmachine/kernels/`.
-- Tests: `archive_test/` with `test_*.py` modules.
-- Design notes and planning docs: `plan/`, `prompts/`, and notebooks in repo root.
+`nandmachine/` is the main package. Use `commands/` for macro and micro ops, `simulator/hardware/` for NAND and xPU timing models, `simulator/runtime/` for address translation and tables, `frontend/` for Torch FX graph capture and passes, and `kernels/` for macro-op codegen prototypes. `archive_test/` is the active regression suite despite its name. Root notebooks such as `hw_pipeline.ipynb` and `graph_pipeline.ipynb` are exploratory; reusable logic belongs in package modules. `plan/` and `prompts/` contain design notes, not runtime code.
 
+## Build, Test, and Development Commands
+There is no formal build pipeline yet; work from the repository root in an environment that already includes `pytest`, `torch`, `transformers`, and `Desim`.
 
+- `python3 -m pytest archive_test -q` runs the current test suite.
+- `python3 -m pytest archive_test/test_nand_sim_core.py -q` checks NAND timing and request serialization paths.
+- `python3 -m compileall nandmachine` performs a quick syntax pass before committing.
+- `jupyter notebook hw_pipeline.ipynb` opens a hardware-pipeline prototype for manual exploration.
 
 ## Coding Style & Naming Conventions
-- Python with 4-space indentation and PEP 8-style spacing.
-- Use `snake_case` for functions/variables/modules, `PascalCase` for classes, and `UPPER_CASE` for constants.
-- Prefer explicit type hints for new/changed APIs (existing code uses `Optional`, `ClassVar`, typed dict/list forms).
-- Keep comments/docstrings concise and in English; explain intent, not obvious mechanics.
+Use Python with 4-space indentation, PEP 8 spacing, and explicit type hints on new or changed APIs. Prefer `snake_case` for modules, functions, and variables, `PascalCase` for classes, and `UPPER_CASE` for constants. Follow local conventions when touching legacy identifiers such as `xPU` or `tRead` instead of renaming them in isolated changes. Keep comments and docstrings brief, technical, and in English.
 
 ## Testing Guidelines
-- Framework: `pytest` (assert-style tests, function-based test cases).
-- Naming: files `test_*.py`, functions `test_*`.
-- Add tests alongside behavior changes, especially for address translation, runtime tables, and NAND timing/serialization paths.
-- For regressions, add a focused failing test first, then implement the fix.
+Write tests with `pytest` using `test_*.py` files and `test_*` functions. Add focused regression coverage for changes in address encoding, runtime tables, graph passes, or NAND/xPU scheduling behavior. No coverage gate is configured, so every behavior change should include at least one targeted test and, when useful, a minimal failing case first.
 
 ## Commit & Pull Request Guidelines
-- Follow existing history style: imperative, sentence-case summaries (for example, `Add runtime resource management`, `Refactor address encoding`).
-- Keep commits scoped to one logical change.
-- PRs should include:
-  - What changed and why.
-  - A short test summary (`pytest` command + result).
-  - Linked issue/task when available.
-  - Notes on behavior or API changes.
-
-## Agent-Specific Notes
-- See `CLAUDE.md`: user-facing discussion should be in Chinese, while code comments and technical artifacts remain in English.
+Recent history uses short, imperative, sentence-case subjects such as `Refactor macro commands and xPU transfer engine`. Keep commits scoped to one subsystem or behavioral change. Pull requests should explain what changed, why it matters, and which validation commands were run. If a change affects timing, mapping, or graph lowering, include the relevant test target or notebook evidence in the PR description.

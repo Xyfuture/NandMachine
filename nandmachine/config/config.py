@@ -19,6 +19,8 @@ class NandConfig(MemoryConfig):
 
     page_size:int # KB
 
+    sram_threshold:int # KB
+
     @property
     def page_size_bytes(self) -> int:
         """Page size in bytes."""

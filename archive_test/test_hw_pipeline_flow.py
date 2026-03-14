@@ -53,7 +53,7 @@ def test_hw_pipeline_flow_runs_and_maps_sram_destination():
         NandMmap(file_id=file_id, pre_alloc_logic_addr=weight_logic_base),
         SramPrefetch(
             prefetch_addr=weight_logic_base,
-            num_pages=weight_pages,
+            num_prefetch_pages=weight_pages,
             pre_alloc_logic_addr=sram_logic_base,
         ),
         MatMul(dim=(batch, weight_m, weight_n), addr=sram_logic_base, weight_bits=weight_bits),
