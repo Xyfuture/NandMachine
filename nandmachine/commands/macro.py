@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, TypeAlias
+from typing import TYPE_CHECKING, ClassVar, TypeAlias
+
+if TYPE_CHECKING:
+    from nandmachine.config.hardware_config import Device
+    from nandmachine.simulator.software.matmul import MatMul
 
 
 LogicAddr: TypeAlias = int
@@ -40,7 +44,7 @@ class RuntimeCall(MacroOp):
 
 @dataclass
 class SramPrefetch(RuntimeCall):
-    num_prefetch_pages: int
+    num_pages: int
 
 
 @dataclass
