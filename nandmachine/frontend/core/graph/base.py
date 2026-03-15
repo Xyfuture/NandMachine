@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import ClassVar, Iterable, Optional, Set, Type, cast
 
 import torch
@@ -10,7 +11,9 @@ from torch.fx import node as fx_node
 from torch.fx.node import Argument
 
 from nandmachine.commands.macro import MacroOp
-from nandmachine.frontend.network.torch_kernels import Attention, LinearBase
+from nandmachine.config.config import NandConfig
+from nandmachine.config.inference_config import InferenceConfig
+from nandmachine.config.model_config import ModelConfigBase
 
 
 
@@ -20,56 +23,29 @@ def _get_fx_legal_ops() -> Set[str]:
 
 
 _FX_LEGAL_OPS = _get_fx_legal_ops()
+_HOOK_MODULE_BASE_MODULE = "nandmachine.frontend.modules.modules"
+_HOOK_MODULE_BASE_NAME = "HookModuleBase"
 
 
-# class NxNode(fx.Node):
-#     """torch.fx.Node with extensible op types."""
+def _is_frontend_hook_module(module: torch.nn.Module) -> bool:
+    return any(
+        base.__name__ == _HOOK_MODULE_BASE_NAME
+        and base.__module__ == _HOOK_MODULE_BASE_MODULE
+        for base in type(module).__mro__
+    )
 
-#     extra_ops: ClassVar[Set[str]] = set()
-#     auto_register_ops: ClassVar[bool] = True
+@dataclass 
+class NxGraphMeta:
 
-#     @classmethod
-#     def register_op_type(cls, op: str) -> None:
-#         cls._validate_op(op)
-#         cls.extra_ops.add(op)
-#         cls._sync_legal_ops()
+    nand_config:NandConfig
 
-#     @classmethod
-#     def register_op_types(cls, ops: Iterable[str]) -> None:
-#         for op in ops:
-#             cls._validate_op(op)
-#         cls.extra_ops.update(ops)
-#         cls._sync_legal_ops()
+    model_config:ModelConfigBase
 
-#     @classmethod
-#     def _validate_op(cls, op: str) -> None:
-#         if not isinstance(op, str) or not op:
-#             raise ValueError("op must be a non-empty string")
+    inference_config:InferenceConfig 
 
-#     @classmethod
-#     def _sync_legal_ops(cls) -> None:
-#         if _FX_LEGAL_OPS is not None:
-#             _FX_LEGAL_OPS.update(cls.extra_ops)
 
-#     @classmethod
-#     def _ensure_legal_op(cls, op: str) -> None:
-#         cls._validate_op(op)
-#         if op in _FX_LEGAL_OPS:
-#             return
-#         if not cls.auto_register_ops:
-#             raise ValueError(f"Unsupported op type: {op!r}")
-#         cls.extra_ops.add(op)
-#         _FX_LEGAL_OPS.add(op)
 
-#     def __init__(self, *args, **kwargs):
-#         if "op" in kwargs:
-#             op = kwargs["op"]
-#         elif len(args) >= 3:
-#             op = args[2]
-#         else:
-#             raise TypeError("op is required to construct NxNode")
-#         self._ensure_legal_op(op)
-#         super().__init__(*args, **kwargs)
+
 
 
 class NxGraph(fx.Graph):
@@ -104,12 +80,10 @@ class NxTracer(fx.Tracer):
         self._leaf_module_types: Set[type[torch.nn.Module]] = set(leaf_modules)
         self._leaf_module_names: Set[str] = set(leaf_module_names)
 
-        self._leaf_module_types.union(
-            {LinearBase,Attention}
-        )
-
     def is_leaf_module(self, m: torch.nn.Module, module_qualified_name: str) -> bool:
-        if type(m) in self._leaf_module_types:
+        if self._leaf_module_types and isinstance(m, tuple(self._leaf_module_types)):
+            return True
+        if _is_frontend_hook_module(m):
             return True
         if module_qualified_name in self._leaf_module_names:
             return True

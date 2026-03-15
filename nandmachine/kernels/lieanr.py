@@ -28,7 +28,7 @@ class LinearNandKernel(NandKernelBase):
             weight_bits: int,
             input_bits: int,
             nand_config: NandConfig,
-    ):
+    )->list[MacroOp]:
         macro_op_list: list[MacroOp] = []
         sram_threshold = nand_config.sram_threshold * 1024 # KB->Bytes
 
