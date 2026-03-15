@@ -1,12 +1,14 @@
 import math
 from Desim import SimModule, SimSession, SimTime
 
-from nandmachine.commands.macro import MacroOp, MatMul, NandMmap, RuntimeCall, SramPrefetch, SramPrefetchRelease
+from nandmachine.commands.macro import MacroOp, MatMulOp, RuntimeCall, SramPrefetch, SramPrefetchRelease
 from nandmachine.commands.micro import DataForward, MemoryOperation, NandPageRead, NandRequest, SramPageRead
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
 
+from nandmachine.config.hardware_config import device_dict
+from nandmachine.simulator.software.matmul import MatMul_Simulation
 
 
 class PerfetchEngine(SimModule):
@@ -70,6 +72,8 @@ class ComputeEngine(SimModule):
         # max（计算时间， 访存时间）
 
         self.config = nand_config
+        self.device = device_dict["A100_80GB_fp16"]
+        self.compile_mode = "exhaustive"
 
         
         self.command_queue:list[DepSlot[MacroOp]] = []
@@ -105,7 +109,15 @@ class ComputeEngine(SimModule):
 
         """
 
-        return 0.0 
+        assert isinstance(macro_op, MatMulOp)
+        matmul_sim = MatMul_Simulation(dim = macro_op.shape, weight_bits = macro_op.weight_bits)
+        cycles = matmul_sim.compile_and_simulate(
+            pcb_module=self.device,
+            compile_mode=self.compile_mode,
+        )
+
+        return cycles
+
 
 
     def load_command_queue(self,command_queue:list[DepSlot]):
