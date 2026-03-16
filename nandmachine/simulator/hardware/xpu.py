@@ -1,7 +1,7 @@
 import math
 from Desim import SimModule, SimSession, SimTime
 
-from nandmachine.commands.macro import MacroOp, MatMulOp, RuntimeCall, SramPrefetch, SramPrefetchRelease
+from nandmachine.commands.macro import FlashAttnOp, MacroOp, MatMulOp, RuntimeCall, SramPrefetch, SramPrefetchRelease
 from nandmachine.commands.micro import DataForward, MemoryOperation, NandPageRead, NandRequest, SramPageRead
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.nand import NandController
@@ -9,6 +9,7 @@ from nandmachine.simulator.hardware.utils import DepSlot
 
 from nandmachine.config.hardware_config import device_dict
 from nandmachine.simulator.software.matmul import MatMul_Simulation
+from nandmachine.simulator.software.flash_attention import FlashAttn_BatchedMatMul_Simulation, Softmax_Simulation
 
 
 class PerfetchEngine(SimModule):
@@ -99,6 +100,44 @@ class ComputeEngine(SimModule):
 
             
 
+    def _validate_flashattn_shapes(self, macro_op: FlashAttnOp) -> None: # flashattn中的矩阵shape合法性检查
+        qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
+        sv_b, sv_m, sv_k, sv_n = macro_op.sv_bmm_input_shape
+        softmax_m, softmax_n = macro_op.softmax_input_shape
+
+        dims = {
+            "qk_b": qk_b,
+            "qk_m": qk_m,
+            "qk_k": qk_k,
+            "qk_n": qk_n,
+            "sv_b": sv_b,
+            "sv_m": sv_m,
+            "sv_k": sv_k,
+            "sv_n": sv_n,
+            "softmax_m": softmax_m,
+            "softmax_n": softmax_n,
+        }
+        invalid_dims = [f"{name}={value}" for name, value in dims.items() if value <= 0]
+        if invalid_dims:
+            raise ValueError(
+                "FlashAttnOp has non-positive dims: " + ", ".join(invalid_dims)
+            )
+
+        shape_errors = []
+        if (softmax_m, softmax_n) != (qk_m, qk_n):
+            shape_errors.append(
+                f"softmax_shape={macro_op.softmax_input_shape} must match qk output (M,N)=({qk_m},{qk_n})"
+            )
+        if sv_b != qk_b:
+            shape_errors.append(f"sv_b({sv_b}) must equal qk_b({qk_b})")
+        if sv_m != qk_m:
+            shape_errors.append(f"sv_m({sv_m}) must equal qk_m({qk_m})")
+        if sv_k != qk_n:
+            shape_errors.append(f"sv_k({sv_k}) must equal qk_n({qk_n})")
+
+        if shape_errors:
+            raise ValueError("FlashAttnOp shape mismatch: " + "; ".join(shape_errors))
+
 
     def execute_macro_op(self,macro_op:MacroOp)->float:
         
@@ -109,14 +148,50 @@ class ComputeEngine(SimModule):
 
         """
 
-        assert isinstance(macro_op, MatMulOp)
-        matmul_sim = MatMul_Simulation(dim = macro_op.shape, weight_bits = macro_op.weight_bits)
-        cycles = matmul_sim.compile_and_simulate(
-            pcb_module=self.device,
-            compile_mode=self.compile_mode,
-        )
+        if isinstance(macro_op, MatMulOp):
+            matmul_sim = MatMul_Simulation(dim = macro_op.shape, weight_bits = macro_op.weight_bits)
+            matmul_cycles = matmul_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+            )
 
-        return cycles
+            return matmul_cycles
+
+        if isinstance(macro_op, FlashAttnOp):
+            self._validate_flashattn_shapes(macro_op)
+
+            qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation(
+                dim=macro_op.qk_bmm_input_shape,
+                matmul_type="QK",
+                weight_bits=macro_op.weight_bits,
+            )
+            qk_bmm_cycles = qk_bmm_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+            )
+
+            softmax_sim = Softmax_Simulation(
+                dim=macro_op.softmax_input_shape,
+                weight_bits=macro_op.weight_bits,
+            )
+            softmax_cycles = softmax_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+            )
+            sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation(
+                dim=macro_op.sv_bmm_input_shape,
+                matmul_type="SV",
+                weight_bits=macro_op.weight_bits,
+            )
+            sv_bmm_cycles = sv_bmm_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+            )
+
+            flashattnop_cycles = qk_bmm_cycles + softmax_cycles + sv_bmm_cycles
+            return flashattnop_cycles
+
+        raise TypeError(f"Unsupported macro op type: {type(macro_op).__name__}")
 
 
 
