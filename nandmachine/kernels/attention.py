@@ -13,8 +13,9 @@ class GQANandKernel(NandKernelBase):
     def __int__(self):
         super().__init__()
 
+    @classmethod
     def lowering(
-            self,
+            cls,
             group_size:int , # GQA 的力度
             num_kv_heads:int, # 多少个 KV head
             head_dim:int, # 每个头的维度
@@ -36,7 +37,7 @@ class GQANandKernel(NandKernelBase):
 
         hyper_page_size = nand_config.num_plane * nand_config.page_size_bytes
 
-        num_hyper_pgaes:int = math.ceil(block_bytes * num_kv_blocks / nand_config.page_size_bytes)
+        num_hyper_pgaes:int = math.ceil(block_bytes * num_kv_blocks / hyper_page_size)
         
         num_blocks_per_hyper_page = math.floor(hyper_page_size / block_bytes)
 

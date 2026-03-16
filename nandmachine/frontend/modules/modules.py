@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.nn as nn
 
-from nandmachine.commands.macro import MacroOp
+from nandmachine.commands.macro import MacroOp, VectorOp
 from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.kernels.lieanr import LinearNandKernel
 
@@ -59,12 +59,13 @@ class LinearBase(HookModuleBase):
         input_size: int,
         output_size: int,
         bias: bool = False,
+        tp_size:int = 1 ,
         tp_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.tp_dim = tp_dim
         self.tp_rank = 0
-        self.tp_size = 1
+        self.tp_size = tp_size
 
         self.input_size = input_size
         self.output_size = output_size
@@ -98,10 +99,11 @@ class ColumnParallelLinear(LinearBase):
         self,
         input_size: int,
         output_size: int,
+        tp_size:int =1 ,
         bias: bool = False,
     ) -> None:
         tp_size = 1
-        super().__init__(input_size, divide(output_size, tp_size), bias, 0)
+        super().__init__(input_size, divide(output_size, tp_size), bias, tp_size,0)
 
 
 class RowParallelLinear(LinearBase):
@@ -109,16 +111,17 @@ class RowParallelLinear(LinearBase):
         self,
         input_size: int,
         output_size: int,
+        tp_size:int = 1,
         bias: bool = False,
     ) -> None:
-        tp_size = 1
-        super().__init__(divide(input_size, tp_size), output_size, bias, 1)
+        super().__init__(divide(input_size, tp_size), output_size, bias,tp_size, 1)
 
 
     def macro_code_gen(self, graph_meta: NxGraphMeta)->list[MacroOp]:
         macro_op_list = super().macro_code_gen(graph_meta)
 
         # TODO 最后加一个 all reduce 
+        
 
         return macro_op_list
 
@@ -157,6 +160,7 @@ class RotaryEmbedding(HookModuleBase):
         return macro_op_list
 
 
+# TODO TP size 
 class Attention(HookModuleBase):
     def __init__(
         self,
@@ -170,8 +174,7 @@ class Attention(HookModuleBase):
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
-        self.k_cache = torch.tensor([])
-        self.v_cache = torch.tensor([])
+
 
 
     def forward(
@@ -185,9 +188,81 @@ class Attention(HookModuleBase):
 
     def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
 
-
+        # graph meta 需要添加什么参数呢？
         
+        # prefill 和 decode 关键的区分点
+
 
 
 
         return super().macro_code_gen(graph_meta)
+
+
+
+class SiluAndMul(HookModuleBase):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.hidden_dim = 0 
+
+
+    def forward(self,x:torch.Tensor):
+        self.hidden_dim = x.shape[-1] //2
+        return x[:,self.hidden_dim]
+
+
+
+
+    def macro_code_gen(self,graph_meta:NxGraphMeta):
+        macro_op_list:list[MacroOp] = [
+            VectorOp(
+                vector_op_type='silu_mul',
+                vector_shape=[graph_meta.inference_config.batch_size,self.hidden_dim]
+            )
+        ]
+
+        return macro_op_list
+    
+
+
+class MergedColumnParallelLinear(ColumnParallelLinear):
+    def __init__(self,
+                 input_size:int,
+                 output_size:int,
+                 tp_size:int,
+                 bias=False,
+                 ) -> None:
+        super().__init__(input_size,output_size,tp_size,bias)
+
+        # 基本上复用 前一个，就是 weight load 的方式有变化，但是我们不关心这个 
+
+    
+    def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
+        return super().macro_code_gen(graph_meta)
+    
+
+
+class QKVParallelLinear(ColumnParallelLinear):
+    def __init__(self,         
+                 hidden_size: int,
+                 head_size: int,
+                 total_num_heads: int,
+                 total_num_kv_heads: int | None = None,
+                 tp_size:int = 1,
+                 bias: bool = False,
+                ) -> None:
+            
+        total_num_kv_heads = total_num_kv_heads or total_num_heads
+        self.head_size = head_size
+        self.num_heads = divide(total_num_heads, tp_size)
+        self.num_kv_heads = divide(total_num_kv_heads, tp_size)
+        output_size = (total_num_heads + 2 * total_num_kv_heads) * self.head_size
+        super().__init__(hidden_size, output_size, tp_size,bias)
+
+
+
+    def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
+        return super().macro_code_gen(graph_meta)
+
+
+
