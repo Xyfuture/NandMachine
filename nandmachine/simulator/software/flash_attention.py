@@ -30,20 +30,14 @@ def _word_size_from_weight_bits(weight_bits: int) -> int:
     return weight_bits // 8
 
 
-class BatchedMatMul_Simulation:
+class FlashAttn_BatchedMatMul_Simulation:
     def __init__(
         self,
-        B: int,
-        M: int,
-        K: int,
-        N: int,
-        matmul_type: MatmulType,
+        dim: tuple[int, int, int, int],
         weight_bits: int = 16,
+        matmul_type: MatmulType = "QK",
     ):
-        self.B = B
-        self.M = M
-        self.K = K
-        self.N = N
+        self.B, self.M, self.K, self.N = dim
         self.weight_bits = weight_bits
         self.word_size = _word_size_from_weight_bits(weight_bits)
         if matmul_type not in ("QK", "SV"):
@@ -1354,9 +1348,8 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
         return ceil(cycle_count / mac_per_clock)
 
 class Softmax_Simulation:
-    def __init__(self, M: int, N: int, weight_bits: int = 16):
-        self.M = M
-        self.N = N
+    def __init__(self, dim: tuple, weight_bits: int = 16):
+        self.M, self.N = dim
         self.weight_bits = weight_bits
         self.word_size = _word_size_from_weight_bits(weight_bits)
         self.output_shape = [self.M, self.N]

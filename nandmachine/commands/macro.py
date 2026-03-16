@@ -54,19 +54,61 @@ class SramPrefetchRelease(RuntimeCall):
 # -------- Compute Operations ---------
 @dataclass
 class MatMulOp(MacroOp):
-    dim: tuple[int, int, int]
+    dim: tuple[int, int, int] # M, K, N。M * K和K * N两个矩阵GEMM
     weight_bits: int
 
     @property
     def shape(self) -> tuple[int, int, int]:
         return self.dim
 
+    @property
+    def output_shape(self) -> tuple[int, int]:
+        m, _, n = self.dim
+        return m, n
+
 
 @dataclass
 class FlashAttnOp(MacroOp):
-    qk_bmm_shape: tuple[int, int, int, int]
-    sv_bmm_shape: tuple[int, int, int, int]
-    softmax_shape: tuple[int, int]
+    qk_bmm_shape: tuple[int, int, int, int] # B，M，K，N。qk阶段的B个M * K和K * N矩阵GEMM
+    sv_bmm_shape: tuple[int, int, int, int] # B，M，N，K。sv阶段的B个M * N和N * K矩阵GEMM
+    softmax_shape: tuple[int, int] # M，N。sotmax的输入矩阵M *。N
+    weight_bits: int
+
+    @property
+    def shape(
+        self,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int], tuple[int, int]]:
+        return self.qk_bmm_shape, self.sv_bmm_shape, self.softmax_shape
+
+    @property
+    def qk_bmm_input_shape(
+        self,
+    ) -> tuple[int, int, int, int]:
+        return self.qk_bmm_shape
+
+    @property
+    def qk_bmm_output_shape(self) -> tuple[int, int, int]:
+        b, m, _, n = self.qk_bmm_shape
+        return b, m, n
+
+    @property
+    def sv_bmm_input_shape(
+        self,
+    ) -> tuple[int, int, int, int]:
+        return self.sv_bmm_shape
+
+    @property
+    def sv_bmm_output_shape(self) -> tuple[int, int, int]:
+        b, m, _, k = self.sv_bmm_shape
+        return b, m, k
+
+    @property
+    def softmax_input_shape(self) -> tuple[int, int]:
+        return self.softmax_shape
+
+    @property
+    def softmax_output_shape(self) -> tuple[int, int]:
+        return self.softmax_shape
 
 
 @dataclass
