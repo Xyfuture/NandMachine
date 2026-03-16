@@ -93,16 +93,17 @@ class ComputeEngine(SimModule):
             # 开始处理， 应该只有 matmul 指令
             # assert isinstance(macro_op_slot.payload,MatMul)
 
-            self.execute_macro_op(macro_op_slot.payload)
-
-            macro_op_slot.is_finished =True
-            macro_op_slot.finish_event.notify(SimTime(1))
+            cycles = self.execute_macro_op(macro_op_slot.payload)
+            execute_cycles = max(1, math.ceil(cycles))
+            macro_op_slot.finish_event.notify(SimTime(execute_cycles))
+            SimModule.wait(macro_op_slot.finish_event)
+            macro_op_slot.is_finished = True
 
             
 
     def _validate_flashattn_shapes(self, macro_op: FlashAttnOp) -> None: # flashattn中的矩阵shape合法性检查
         qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
-        sv_b, sv_m, sv_k, sv_n = macro_op.sv_bmm_input_shape
+        sv_b, sv_m, sv_n, sv_k = macro_op.sv_bmm_input_shape
         softmax_m, softmax_n = macro_op.softmax_input_shape
 
         dims = {
@@ -112,8 +113,8 @@ class ComputeEngine(SimModule):
             "qk_n": qk_n,
             "sv_b": sv_b,
             "sv_m": sv_m,
-            "sv_k": sv_k,
             "sv_n": sv_n,
+            "sv_k": sv_k,
             "softmax_m": softmax_m,
             "softmax_n": softmax_n,
         }
@@ -132,8 +133,8 @@ class ComputeEngine(SimModule):
             shape_errors.append(f"sv_b({sv_b}) must equal qk_b({qk_b})")
         if sv_m != qk_m:
             shape_errors.append(f"sv_m({sv_m}) must equal qk_m({qk_m})")
-        if sv_k != qk_n:
-            shape_errors.append(f"sv_k({sv_k}) must equal qk_n({qk_n})")
+        if sv_n != qk_n:
+            shape_errors.append(f"sv_n({sv_n}) must equal qk_n({qk_n})")
 
         if shape_errors:
             raise ValueError("FlashAttnOp shape mismatch: " + "; ".join(shape_errors))

@@ -70,7 +70,7 @@ class MatMulOp(MacroOp):
 @dataclass
 class FlashAttnOp(MacroOp):
     qk_bmm_shape: tuple[int, int, int, int] # B，M，K，N。qk阶段的B个M * K和K * N矩阵GEMM
-    sv_bmm_shape: tuple[int, int, int, int] # B，M，K，N。sv阶段的B个M * K和K * N矩阵GEMM
+    sv_bmm_shape: tuple[int, int, int, int] # B，M，N，K。sv阶段的B个M * N和N * K矩阵GEMM
     softmax_shape: tuple[int, int] # M，N。sotmax的输入矩阵M *。N
     weight_bits: int
 
@@ -99,8 +99,8 @@ class FlashAttnOp(MacroOp):
 
     @property
     def sv_bmm_output_shape(self) -> tuple[int, int, int]:
-        b, m, _, n = self.sv_bmm_shape
-        return b, m, n
+        b, m, _, k = self.sv_bmm_shape
+        return b, m, k
 
     @property
     def softmax_input_shape(self) -> tuple[int, int]:
