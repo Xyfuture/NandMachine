@@ -38,8 +38,8 @@ print(f"Meta tensor device: {meta_result.device}")  # Should print meta
 # Test 5: Import and use in torch_kernels
 print("\n[Test 5] Import torch_kernels module")
 try:
-    from nandmachine.frontend.network.torch_kernels import LinearBase, ColumnParallelLinear
-    print("[OK] Successfully imported torch_kernels classes")
+    from nandmachine.frontend.modules.modules import LinearBase, ColumnParallelLinear
+    print("[OK] Successfully imported frontend module classes")
 except Exception as e:
     print(f"[FAIL] Failed to import: {e}")
 

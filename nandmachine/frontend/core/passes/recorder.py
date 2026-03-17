@@ -9,7 +9,7 @@ import torch.fx as fx
 from torch.fx import GraphModule
 
 from nandmachine.frontend.core.passes.base import GraphPass
-from nandmachine.frontend.network.torch_kernels import (
+from nandmachine.frontend.modules.modules import (
     Attention, LinearBase, RowParallelLinear
 )
 
@@ -111,10 +111,11 @@ class RecorderPass(GraphPass):
 
     def _record_linear_info(self, node: fx.Node, module: LinearBase) -> None:
         """Record linear-specific information."""
+        bias = getattr(module, "bias", None)
         linear_info = {
             'weight_shape': tuple(module.weight.shape),
             'require_all_reduce': isinstance(module, RowParallelLinear),
-            'has_bias': module.bias is not None,
+            'has_bias': bias is not None,
         }
 
         # Record tensor parallel info if available
@@ -129,13 +130,14 @@ class RecorderPass(GraphPass):
 
     def _record_nand_pages(self, node: fx.Node, module: LinearBase) -> None:
         """Calculate and record the number of NAND storage pages needed."""
+        bias = getattr(module, "bias", None)
         # Calculate weight storage
         weight_elements = module.weight.numel()
         total_bytes = weight_elements * self.BYTES_PER_ELEMENT
 
         # Add bias storage if present
-        if module.bias is not None:
-            bias_elements = module.bias.numel()
+        if bias is not None:
+            bias_elements = bias.numel()
             total_bytes += bias_elements * self.BYTES_PER_ELEMENT
 
         # Calculate number of pages
@@ -146,7 +148,7 @@ class RecorderPass(GraphPass):
         # Also record detailed storage info for debugging
         node.meta['storage_info'] = {
             'weight_elements': weight_elements,
-            'bias_elements': module.bias.numel() if module.bias is not None else 0,
+            'bias_elements': bias.numel() if bias is not None else 0,
             'total_bytes': total_bytes,
             'bytes_per_element': self.BYTES_PER_ELEMENT,
             'page_size_bytes': self.PAGE_SIZE_BYTES,

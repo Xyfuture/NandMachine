@@ -5,7 +5,6 @@ import torch.fx as fx
 from nandmachine.commands.macro import * 
 from nandmachine.config.config import NandConfig
 from nandmachine.frontend.core.graph.base import NxGraph
-from nandmachine.frontend.network.torch_kernels import RowParallelLinear
 from nandmachine.kernels.base import NandKernelBase
 from nandmachine.kernels.utils import PageTableAddrPreAllocator
 

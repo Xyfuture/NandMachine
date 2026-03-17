@@ -11,7 +11,7 @@ from transformers import Qwen3Config
 # from nanovllm.layers.rotary_embedding import get_rope
 # from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
-from nandmachine.frontend.network.torch_kernels import *
+from .torch_kernels import *
 
 
 

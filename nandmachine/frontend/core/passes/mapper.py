@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from nandmachine.config.config import NandConfig
 from nandmachine.frontend.core.passes.base import GraphPass
-from nandmachine.frontend.network.torch_kernels import LinearBase
+from nandmachine.frontend.modules.modules import LinearBase
 from nandmachine.simulator.runtime.addr import NandAddress, NandBlockAddress
 from nandmachine.simulator.runtime.tables import NandFileEntry, NandFileMeta, NandFileTable, NandFreeTable, Permission
 
