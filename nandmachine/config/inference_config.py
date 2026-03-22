@@ -26,6 +26,14 @@ class MoEParallelConfig:
 class InferenceConfig:
     batch_size:int 
 
-    kv_cache_num_pages_per_layer:int 
+    input_sequence_length:int 
+    output_sequence_length:int 
+
+    weight_bits:int 
+    activation_bits:int 
+    kv_cache_bits:int 
+
+    kv_block_size_bytes:int # 一个 block 有多少 bytes，不是 token 的个数 
+
 
     parallel_config:ParallelConfig

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from transformers import Qwen3Config
+
+from nandmachine.config.model_config import Qwen3ModelConfig
 
 from nandmachine.frontend.modules.modules import (
     Attention,
@@ -116,7 +117,7 @@ class Qwen3MLP(nn.Module):
             tp_size=TP_SIZE,
             bias=False,
         )
-        self.act_fn = SiluAndMul()
+        self.act_fn = SiluAndMul(hidden_dim=intermediate_size)
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
@@ -137,17 +138,17 @@ class Qwen3MLP(nn.Module):
 
 
 class Qwen3DecoderLayer(nn.Module):
-    def __init__(self, config: Qwen3Config) -> None:
+    def __init__(self, config: Qwen3ModelConfig) -> None:
         super().__init__()
         self.self_attn = Qwen3Attention(
             hidden_size=config.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
             max_position=config.max_position_embeddings,
-            head_dim=getattr(config, "head_dim", None),
+            head_dim=config.head_dim,
             rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=getattr(config, "attention_bias", False),
-            rope_theta=getattr(config, "rope_theta", 10000.0),
+            qkv_bias=config.attention_bias,
+            rope_theta=config.rope_theta,
         )
         self.mlp = Qwen3MLP(
             hidden_size=config.hidden_size,

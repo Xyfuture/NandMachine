@@ -28,7 +28,7 @@ class GQANandKernel(NandKernelBase):
             input_bits:int,
             nand_config:NandConfig
 
-    ):
+    )->list[MacroOp]:
 
         # 需要什么参数
         
@@ -55,6 +55,7 @@ class GQANandKernel(NandKernelBase):
                 qk_bmm_shape=(b,m,k,n),
                 sv_bmm_shape=(b,m,n,k),
                 softmax_shape=(b*m,n),
+                weight_bits=kv_cache_bits,
             ).with_inputs(sram_prefetch)
 
             sram_release = SramPrefetchRelease().with_inputs(flash_attn)
@@ -64,5 +65,8 @@ class GQANandKernel(NandKernelBase):
                 flash_attn,
                 sram_release,
             ])
+        
+        return macro_op_list
+        
 
             

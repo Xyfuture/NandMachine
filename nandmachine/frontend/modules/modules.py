@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from nandmachine.commands.macro import MacroOp, VectorOp
 from nandmachine.frontend.core.graph.base import NxGraphMeta
+from nandmachine.kernels.attention import GQANandKernel
 from nandmachine.kernels.lieanr import LinearNandKernel
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ class HookModuleBase(nn.Module):
         self.module_info.update(kwargs)
 
     def macro_code_gen(self, graph_meta: "NxGraphMeta")->list[MacroOp]:
-        raise NotImplemented
+        raise NotImplementedError
 
 
 class RMSNorm(HookModuleBase):
@@ -46,8 +47,16 @@ class RMSNorm(HookModuleBase):
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
 
-    def macro_code_gen(self, graph_meta: "NxGraphMeta"):
-        pass
+    def macro_code_gen(self, graph_meta: "NxGraphMeta") -> list[MacroOp]:
+        return [
+            VectorOp(
+                vector_op_type="rms_norm",
+                vector_shape=[
+                    graph_meta.inference_config.batch_size,
+                    self.hidden_size,
+                ],
+            )
+        ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
@@ -121,7 +130,7 @@ class RowParallelLinear(LinearBase):
         macro_op_list = super().macro_code_gen(graph_meta)
 
         # TODO 最后加一个 all reduce 
-        
+
 
         return macro_op_list
 
@@ -192,22 +201,68 @@ class Attention(HookModuleBase):
         
         # prefill 和 decode 关键的区分点
 
+        # 目前只考虑 decode 阶段的事情
+
+
+        
+        params = self.build_gqa_kernel_param(graph_meta)
+        macro_op_list = GQANandKernel.lowering(*params)
+
+        return macro_op_list
 
 
 
-        return super().macro_code_gen(graph_meta)
+
+
+    def build_gqa_kernel_param(self,graph_meta:NxGraphMeta):
+        model_config = graph_meta.model_config
+        inference_config = graph_meta.inference_config
+        kv_cache_state = graph_meta.kv_cache_state
+
+        assert model_config.attention_type == 'gqa'
+
+        group_size = model_config.num_attention_heads // model_config.num_key_value_heads
+        num_kv_heads = model_config.num_key_value_heads
+        head_dim = model_config.head_dim
+        
+        # TODO Fix this 
+        num_kv_blocks:int = kv_cache_state.num_kv_blocks
+        kv_block_size:int = kv_cache_state.kv_block_size_tokens
+        block_bytes:int = inference_config.kv_block_size_bytes
+
+        kv_cache_bits:int = inference_config.kv_cache_bits
+        input_bits:int = inference_config.activation_bits
+        nand_config = graph_meta.nand_config
+
+        return (
+            group_size,
+            num_kv_heads,
+            head_dim,
+            num_kv_blocks,
+
+            kv_block_size,
+            block_bytes,
+
+            kv_cache_bits,
+            input_bits,
+            nand_config,
+        )
+
+    
+
 
 
 
 class SiluAndMul(HookModuleBase):
-    def __init__(self) -> None:
+    def __init__(self, hidden_dim: int = 0) -> None:
         super().__init__()
 
-        self.hidden_dim = 0 
+        self.hidden_dim = hidden_dim
 
 
     def forward(self,x:torch.Tensor):
-        self.hidden_dim = x.shape[-1] //2
+        if self.hidden_dim == 0:
+            self.hidden_dim = x.shape[-1] //2
         return x[:,self.hidden_dim]
 
 
@@ -263,6 +318,5 @@ class QKVParallelLinear(ColumnParallelLinear):
 
     def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
         return super().macro_code_gen(graph_meta)
-
 
 

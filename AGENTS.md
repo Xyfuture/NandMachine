@@ -19,3 +19,7 @@ Write tests with `pytest` using `test_*.py` files and `test_*` functions. Add fo
 
 ## Commit & Pull Request Guidelines
 Recent history uses short, imperative, sentence-case subjects such as `Refactor macro commands and xPU transfer engine`. Keep commits scoped to one subsystem or behavioral change. Pull requests should explain what changed, why it matters, and which validation commands were run. If a change affects timing, mapping, or graph lowering, include the relevant test target or notebook evidence in the PR description.
+
+不要给出任何为了兼容性，或者兜底的方案，如果遇到问题了，就直接报错退出
+
+看一下  @CLAUDE.md 中的内容 

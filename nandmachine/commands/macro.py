@@ -44,7 +44,7 @@ class RuntimeCall(MacroOp):
 
 @dataclass
 class SramPrefetch(RuntimeCall):
-    num_pages: int
+    num_prefetch_pages: int
 
 
 @dataclass
@@ -121,12 +121,34 @@ class VectorOp(MacroOp):
 
 @dataclass
 class AllReduceOp(MacroOp):
-    pass
+    num_ranks:int  # 这次通信，集合的规模是多大
+    
+    data_size:int # 集合通信, 传输的大小
+    # 对于 all reduce 而言，就是每个 rank 给其他每个 rank 发送的数据量，最后自己得到一个 data_size 大小的结果
+    
+
+@dataclass
+class AllGatherOp(MacroOp):
+    num_ranks:int 
+
+    data_size:int # 对于 all gather 而言，这个意味着每个 rank 需要对外发出的数据量，自己收到的数据量是 data_sizee * num_ranks
+    
+    
+
+
+@dataclass
+class ReduceScatterOp(MacroOp):
+    num_ranks:int 
+
+    data_size:int # 对于 reduce scatter 而言，data size 表示每个 rank 最后拿到的 size。自己拥有 data_size * num_ranks 的数据量，用来对外发送
 
 
 @dataclass
 class All2AllOp(MacroOp):
-    pass
+    num_ranks:int 
+
+    data_size:int # 对于 all to all 而言，data_size 表示 单个 rank 给任意一个 rank 发送的数据量，发送的总数据量是 num_ranks * data_size
+
 
 
 __all__ = [

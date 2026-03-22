@@ -1,3 +1,4 @@
+from functools import lru_cache
 import os
 import sys
 
@@ -44,6 +45,31 @@ class FlashAttn_BatchedMatMul_Simulation:
             raise ValueError(f"Unsupported matmul_type: {matmul_type}")
         self.matmul_type = matmul_type
 
+    @classmethod
+    def get_instance(
+        cls,
+        dim: tuple[int, int, int, int],
+        weight_bits: int = 16,
+        matmul_type: MatmulType = "QK",
+    ) -> "FlashAttn_BatchedMatMul_Simulation":
+        return cls._get_cached_instance(cls, dim, weight_bits, matmul_type)
+
+    @classmethod
+    def clear_caches(cls) -> None:
+        cls._get_cached_instance.cache_clear()
+        cls.compile_and_simulate.cache_clear()
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _get_cached_instance(
+        cls: type["FlashAttn_BatchedMatMul_Simulation"],
+        dim: tuple[int, int, int, int],
+        weight_bits: int,
+        matmul_type: MatmulType,
+    ) -> "FlashAttn_BatchedMatMul_Simulation":
+        return cls(dim=dim, weight_bits=weight_bits, matmul_type=matmul_type)
+
+    @lru_cache(maxsize=256)
     def compile_and_simulate(self,
         pcb_module: Device,
         compile_mode: str = "exhaustive",
@@ -1282,7 +1308,11 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             except KeyError:
                 # print('not found in look up table')
                 # 查表未命中则调用ScaleSim
-                config = f"./systolic_array_model/temp/systolic_array_{os.getpid()}.cfg"
+                os.makedirs(SYSTOLIC_TEMP_DIR, exist_ok=True)
+                config = os.path.join(
+                    SYSTOLIC_TEMP_DIR,
+                    f"systolic_array_{os.getpid()}.cfg",
+                )
                 with open(config, "w") as f:
                     f.writelines("[general]\n")
                     f.writelines("run_name = systolic_array\n\n")
@@ -1297,21 +1327,47 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                     f.writelines("OfmapOffset:    20000000\n")
                     f.writelines("Dataflow : " + dataflow + "\n")
                     f.writelines("Bandwidth : " + "100" + "\n")
-                    f.writelines("MemoryBanks: 1\n\n")
+                    f.writelines("MemoryBanks: 1\n")
+                    f.writelines("ReadRequestBuffer: 60\n")
+                    f.writelines("WriteRequestBuffer: 60\n\n")
                     f.writelines("[run_presets]\n")
                     f.writelines("InterfaceBandwidth: CALC\n")
+                    f.writelines("UseRamulatorTrace: False\n\n")
+                    f.writelines("[layout]\n")
+                    f.writelines("IfmapCustomLayout: False\n")
+                    f.writelines("FilterCustomLayout: False\n")
+                    f.writelines("IfmapSRAMBankBandwidth: 10\n")
+                    f.writelines("IfmapSRAMBankNum: 10\n")
+                    f.writelines("IfmapSRAMBankPort: 2\n")
+                    f.writelines("FilterSRAMBankBandwidth: 10\n")
+                    f.writelines("FilterSRAMBankNum: 10\n")
+                    f.writelines("FilterSRAMBankPort: 2\n\n")
+                    f.writelines("[sparsity]\n")
+                    f.writelines("SparsitySupport: False\n")
 
-                topology = f"./systolic_array_model/temp/matmul_{os.getpid()}.csv"
+                topology = os.path.join(
+                    SYSTOLIC_TEMP_DIR,
+                    f"matmul_{os.getpid()}.csv",
+                )
                 with open(topology, "w") as f:
                     f.writelines("Layer, M, N, K\n")
                     f.writelines(f"matmul1, {M}, {N}, {K},\n")
 
-                logpath = f"./systolic_array_model/temp/"
+                layout = os.path.join(
+                    SYSTOLIC_TEMP_DIR,
+                    f"layout_{os.getpid()}.csv",
+                )
+                with open(layout, "w") as f:
+                    f.writelines("Layer name,Layout,\n")
+                    f.writelines("matmul1," + ",".join(["1"] * 20) + ",\n")
+
+                logpath = SYSTOLIC_TEMP_DIR
                 s = scalesim(
                     save_disk_space=True,
                     verbose=False,
                     config=config,
                     topology=topology,
+                    layout=layout,
                     input_type_gemm=True,
                 )
                 s.run_scale(top_path=logpath)
@@ -1319,7 +1375,10 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 cycle_count = s.runner.single_layer_sim_object_list[0].total_cycles
                 util_rate = s.runner.single_layer_sim_object_list[0].overall_util
                 with open(
-                    f"./systolic_array_model/look_up_table_{array_height}_{array_width}.csv",
+                    os.path.join(
+                        SYSTOLIC_ARRAY_MODEL_DIR,
+                        f"look_up_table_{array_height}_{array_width}.csv",
+                    ),
                     "a",
                 ) as f:
                     f.writelines(

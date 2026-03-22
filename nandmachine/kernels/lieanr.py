@@ -31,7 +31,7 @@ class LinearNandKernel(NandKernelBase):
         macro_op_list: list[MacroOp] = []
         sram_threshold = nand_config.sram_threshold * 1024 # KB->Bytes
 
-        n_slice = sram_threshold // (k * (weight_bits // 8))                                                                                                  
+        n_slice = max(1, sram_threshold // (k * (weight_bits // 8)))
         num_splits = math.ceil(n / n_slice)                                                                                                                   
                                                                                                                                                                 
         n_shape_list = []                                                                                                                                     
@@ -41,7 +41,7 @@ class LinearNandKernel(NandKernelBase):
 
 
         for cur_n in n_shape_list:
-            prefetch_pages = math.ceil( ((k*cur_n*weight_bits+7)//8)/ nand_config.page_size )
+            prefetch_pages = math.ceil( ((k*cur_n*weight_bits+7)//8)/ nand_config.page_size_bytes )
             
             sram_prefetch = SramPrefetch(prefetch_pages)
 

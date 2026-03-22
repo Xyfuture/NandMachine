@@ -11,6 +11,7 @@ from torch.fx import node as fx_node
 from torch.fx.node import Argument
 
 from nandmachine.commands.macro import MacroOp
+from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
 from nandmachine.config.inference_config import InferenceConfig
 from nandmachine.config.model_config import ModelConfigBase
@@ -42,6 +43,8 @@ class NxGraphMeta:
     model_config:ModelConfigBase
 
     inference_config:InferenceConfig 
+
+    kv_cache_state:KVCacheState
 
 
 

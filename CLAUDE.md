@@ -28,3 +28,5 @@ nandmachine/ 下有多个文件夹，我简单描述一下其对应的功能：
     - 模拟相关的核心逻辑放置到了 hardware 目录下， 其中有一个 xpu 作为 toplevel， 其内部有多个异步并行的 engine，通过指令之间的依赖实现同步。NandController 作为接口，用于访问 nand ，NandSimCore 则提供 nand 操作延迟的内在仿真功能，基于Desim 进行开发。
 
     
+
+不要给出任何为了兼容性，或者兜底的方案，如果遇到问题了，就直接报错退出

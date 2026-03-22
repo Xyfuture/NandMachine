@@ -132,3 +132,8 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+
+
+# systolic array 
+nandmachine/simulator/systolic_array_model/temp/
