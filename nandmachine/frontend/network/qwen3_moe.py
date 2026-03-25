@@ -314,8 +314,9 @@ class FusedMoE(HookModuleBase):
         )
         peer_payload_bytes = math.ceil(total_payload_bytes / parallel_config.ffn_ep_size)
         return All2AllOp(
-            num_ranks=parallel_config.ffn_ep_size,
+            num_gpus=parallel_config.ffn_ep_size,
             data_size=peer_payload_bytes,
+            weight_bits=activation_bits,
         )
 
 

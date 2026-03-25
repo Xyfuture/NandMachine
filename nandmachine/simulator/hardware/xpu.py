@@ -3,6 +3,7 @@ import math
 from Desim import SimModule, SimTime
 
 from nandmachine.commands.macro import (
+    All2AllOp,
     FlashAttnOp,
     MacroOp,
     MatMulOp,
@@ -12,10 +13,14 @@ from nandmachine.commands.macro import (
 )
 from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import Device, device_dict
+from nandmachine.config.interconnect_config import get_interconnect_for_device_or_raise
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
-from nandmachine.simulator.software.matmul import MatMul_Simulation
+from nandmachine.simulator.software.communication_primitives_of_MoE import (
+    AllToAllPrimitive_Simulation,
+)
 from nandmachine.simulator.software.flash_attention import FlashAttn_BatchedMatMul_Simulation, Softmax_Simulation
+from nandmachine.simulator.software.matmul import MatMul_Simulation
 
 
 class PerfetchEngine(SimModule):
@@ -74,8 +79,9 @@ class ComputeEngine(SimModule):
         self,
         nand_config: NandConfig,
         *,
-        device_name: str = "A100_80GB_fp16",
+        device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        weight_bits: int = 16,
     ):
         super().__init__()
 
@@ -90,6 +96,12 @@ class ComputeEngine(SimModule):
             raise ValueError(f"Unsupported device_name: {device_name}")
         self.device: Device = device_dict[device_name]
         self.compile_mode = compile_mode
+        supported_weight_bits = {8, 16}
+        if weight_bits not in supported_weight_bits:
+            raise ValueError(
+                f"Unsupported weight_bits={weight_bits}, expected one of {sorted(supported_weight_bits)}"
+            )
+        self.weight_bits = weight_bits
 
         
         self.command_queue:list[DepSlot[MacroOp]] = []
@@ -170,7 +182,9 @@ class ComputeEngine(SimModule):
         self._validate_vector_shape(macro_op)
 
         total_elements = math.prod(macro_op.vector_shape)
-        vector_flops_per_cycle = self.device.compute_module.total_vector_flops_per_cycle
+        vector_flops_per_cycle = self.device.compute_module.get_total_vector_flops_per_cycle(
+            self.weight_bits
+        )
         exp_flops = self.device.compute_module.core.vector_unit.flops_per_exp
 
         if macro_op.vector_op_type == "rms_norm":
@@ -185,20 +199,22 @@ class ComputeEngine(SimModule):
         return max(1.0, total_flops / vector_flops_per_cycle)
 
     def _bytes_per_value(self, weight_bits: int) -> int:
-        if weight_bits <= 0 or weight_bits % 8 != 0:
+        supported_weight_bits = {8, 16}
+        if weight_bits not in supported_weight_bits:
             raise ValueError(
-                f"Unsupported weight_bits={weight_bits}, expected a positive multiple of 8"
+                f"Unsupported weight_bits={weight_bits}, expected one of {sorted(supported_weight_bits)}"
             )
         return weight_bits // 8
 
     def _estimate_matmul_cycles(self, macro_op: MatMulOp) -> float:
         m, k, n = macro_op.shape
-        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
+        bytes_per_value = self._bytes_per_value(self.weight_bits)
         array = self.device.compute_module.core.systolic_array
+        mac_per_cycle = array.get_mac_per_cycle(self.weight_bits)
         systolic_flops_per_cycle = (
             array.array_height
             * array.array_width
-            * array.mac_per_cycle
+            * mac_per_cycle
             * 2
             * self.device.compute_module.core.systolic_array_count
             * self.device.compute_module.core_count
@@ -218,18 +234,20 @@ class ComputeEngine(SimModule):
         qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
         _, _, _, sv_k = macro_op.sv_bmm_input_shape
         softmax_m, softmax_n = macro_op.softmax_input_shape
-        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
-        vector_flops_per_cycle = self.device.compute_module.total_vector_flops_per_cycle
+        bytes_per_value = self._bytes_per_value(self.weight_bits)
+        vector_flops_per_cycle = self.device.compute_module.get_total_vector_flops_per_cycle(
+            self.weight_bits
+        )
         exp_flops = self.device.compute_module.core.vector_unit.flops_per_exp
         io_bandwidth_per_cycle = (
             self.device.io_module.bandwidth / self.device.compute_module.clock_freq
         )
 
         qk_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_k, qk_n), weight_bits=macro_op.weight_bits)
+            MatMulOp(dim=(qk_b * qk_m, qk_k, qk_n), weight_bits=self.weight_bits)
         )
         sv_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_n, sv_k), weight_bits=macro_op.weight_bits)
+            MatMulOp(dim=(qk_b * qk_m, qk_n, sv_k), weight_bits=self.weight_bits)
         )
 
         softmax_flops = softmax_m * softmax_n * (exp_flops + 4)
@@ -239,6 +257,41 @@ class ComputeEngine(SimModule):
         softmax_cycles = max(1.0, softmax_compute_cycles, softmax_io_cycles)
 
         return qk_cycles + softmax_cycles + sv_cycles
+
+    def _estimate_all2all_cycles(self, macro_op: All2AllOp) -> float:
+        if macro_op.num_gpus <= 0:
+            raise ValueError(f"num_gpus must be positive, got {macro_op.num_gpus}")
+        if macro_op.data_size < 0:
+            raise ValueError(f"data_size must be non-negative, got {macro_op.data_size}")
+        if macro_op.num_gpus == 1 or macro_op.data_size == 0:
+            return 1.0
+
+        interconnect = get_interconnect_for_device_or_raise(
+            device_name=self.device_name,
+            device_count=macro_op.num_gpus,
+        )
+
+        source_word_size = self._bytes_per_value(macro_op.weight_bits)
+        target_word_size = self._bytes_per_value(self.weight_bits)
+        if macro_op.data_size % source_word_size != 0:
+            raise ValueError(
+                "All2AllOp.data_size must be divisible by source word size. "
+                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
+            )
+        num_values = macro_op.data_size // source_word_size
+        target_data_size = num_values * target_word_size
+
+        all2all_sim = AllToAllPrimitive_Simulation(
+            num_gpus=macro_op.num_gpus,
+            data_size=target_data_size,
+            weight_bits=self.weight_bits,
+        )
+        all2all_cycles = all2all_sim.compile_and_simulate(
+            pcb_module=self.device,
+            interconnect_module=interconnect,
+            compile_mode=self.compile_mode,
+        )
+        return max(1.0, float(all2all_cycles))
 
     def _is_invalid_cycle_count(self, cycles: float) -> bool:
         return not math.isfinite(cycles) or cycles <= 0 or cycles >= 2**63 - 1
@@ -256,7 +309,7 @@ class ComputeEngine(SimModule):
             try:
                 matmul_sim = MatMul_Simulation.get_instance(
                     dim=macro_op.shape,
-                    weight_bits=macro_op.weight_bits,
+                    weight_bits=self.weight_bits,
                 )
                 matmul_cycles = matmul_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -277,7 +330,7 @@ class ComputeEngine(SimModule):
                 qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
                     dim=macro_op.qk_bmm_input_shape,
                     matmul_type="QK",
-                    weight_bits=macro_op.weight_bits,
+                    weight_bits=self.weight_bits,
                 )
                 qk_bmm_cycles = qk_bmm_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -286,7 +339,7 @@ class ComputeEngine(SimModule):
 
                 softmax_sim = Softmax_Simulation(
                     dim=macro_op.softmax_input_shape,
-                    weight_bits=macro_op.weight_bits,
+                    weight_bits=self.weight_bits,
                 )
                 softmax_cycles = softmax_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -295,7 +348,7 @@ class ComputeEngine(SimModule):
                 sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
                     dim=macro_op.sv_bmm_input_shape,
                     matmul_type="SV",
-                    weight_bits=macro_op.weight_bits,
+                    weight_bits=self.weight_bits,
                 )
                 sv_bmm_cycles = sv_bmm_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -312,6 +365,9 @@ class ComputeEngine(SimModule):
 
         if isinstance(macro_op, VectorOp):
             return self._estimate_vector_cycles(macro_op)
+
+        if isinstance(macro_op, All2AllOp):
+            return self._estimate_all2all_cycles(macro_op)
 
         raise TypeError(f"Unsupported macro op type: {type(macro_op).__name__}")
 
@@ -340,14 +396,16 @@ class xPU(SimModule):
         self,
         nand_config: NandConfig,
         *,
-        device_name: str = "A100_80GB_fp16",
+        device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        weight_bits: int = 16,
     ):
         super().__init__()
 
         self.nand_config:NandConfig = nand_config
         self.device_name = device_name
         self.compile_mode = compile_mode
+        self.weight_bits = weight_bits
 
         # 在这里初始化 nand controller
         self.nand_controller = NandController(self.nand_config)
@@ -358,6 +416,7 @@ class xPU(SimModule):
             self.nand_config,
             device_name=device_name,
             compile_mode=compile_mode,
+            weight_bits=weight_bits,
         )
         self.prefetch_engine = PerfetchEngine(self.nand_controller)
 

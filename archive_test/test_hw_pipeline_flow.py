@@ -37,8 +37,8 @@ def test_xpu_instances_keep_their_own_compute_settings():
 
     assert fast_xpu.compute_engine.compile_mode == "heuristic-GPU"
     assert throughput_xpu.compute_engine.compile_mode == "heuristic-our-throughput"
-    assert fast_xpu.compute_engine.device_name == "A100_80GB_fp16"
-    assert throughput_xpu.compute_engine.device_name == "A100_80GB_fp16"
+    assert fast_xpu.compute_engine.device_name == "A100_80GB"
+    assert throughput_xpu.compute_engine.device_name == "A100_80GB"
 
     SimSession.reset()
 

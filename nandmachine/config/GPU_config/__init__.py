@@ -1,4 +1,4 @@
-from nandmachine.config.GPU_config import (
+from nandmachine.config.GPU_config.A100 import (
     A100_80GB_FP16,
     A100_CLOCK_FREQ_HZ,
     A100_COMPUTE_MODULE_FP16,
@@ -15,22 +15,35 @@ from nandmachine.config.GPU_config import (
     A100_VECTOR_FLOPS_PER_CYCLE_FP16,
     A100_VECTOR_FLOPS_PER_CYCLE_FP8,
     A100_VECTOR_UNIT_FP16,
+)
+from nandmachine.config.GPU_config.H100 import (
     H100_PCIE_CLOCK_FREQ_HZ,
+    H100_PCIE_COMPUTE_MODULE_FP16,
+    H100_PCIE_CORE_COUNT,
     H100_PCIE_FP16,
     H100_SXM_CLOCK_FREQ_HZ,
+    H100_SXM_COMPUTE_MODULE_FP16,
+    H100_SXM_CORE_COUNT,
     H100_SXM_FP16,
+)
+from nandmachine.config.GPU_config.H200 import (
     H200_NVL_CLOCK_FREQ_HZ,
+    H200_NVL_COMPUTE_MODULE_FP16,
+    H200_NVL_CORE_COUNT,
     H200_NVL_FP16,
     H200_SXM_CLOCK_FREQ_HZ,
+    H200_SXM_COMPUTE_MODULE_FP16,
+    H200_SXM_CORE_COUNT,
     H200_SXM_FP16,
+)
+from nandmachine.config.GPU_config.registry import device_dict, get_device_or_raise
+from nandmachine.config.GPU_config.schema import (
     ComputeModule,
     Core,
     Device,
     IOModule,
     SystolicArray,
     VectorUnit,
-    device_dict,
-    get_device_or_raise,
 )
 
 __all__ = [
@@ -56,13 +69,21 @@ __all__ = [
     "A100_COMPUTE_MODULE_FP16",
     "A100_IO_MODULE",
     "A100_80GB_FP16",
+    "H100_SXM_CORE_COUNT",
     "H100_SXM_CLOCK_FREQ_HZ",
-    "H100_PCIE_CLOCK_FREQ_HZ",
-    "H200_SXM_CLOCK_FREQ_HZ",
-    "H200_NVL_CLOCK_FREQ_HZ",
+    "H100_SXM_COMPUTE_MODULE_FP16",
     "H100_SXM_FP16",
+    "H100_PCIE_CORE_COUNT",
+    "H100_PCIE_CLOCK_FREQ_HZ",
+    "H100_PCIE_COMPUTE_MODULE_FP16",
     "H100_PCIE_FP16",
+    "H200_SXM_CORE_COUNT",
+    "H200_SXM_CLOCK_FREQ_HZ",
+    "H200_SXM_COMPUTE_MODULE_FP16",
     "H200_SXM_FP16",
+    "H200_NVL_CORE_COUNT",
+    "H200_NVL_CLOCK_FREQ_HZ",
+    "H200_NVL_COMPUTE_MODULE_FP16",
     "H200_NVL_FP16",
     "device_dict",
     "get_device_or_raise",

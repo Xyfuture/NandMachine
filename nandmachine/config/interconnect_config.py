@@ -2,6 +2,36 @@ from enum import Enum, auto
 from math import ceil
 from typing import Dict
 
+from nandmachine.config.GPU_config.A100 import (
+    A100_FLIT_SIZE_BYTES,
+    A100_HEADER_SIZE_BYTES,
+    A100_LINK_LATENCY_SEC,
+    A100_MAX_PAYLOAD_SIZE_BYTES,
+    A100_NVLINK_BW_BIDIR_BPS,
+    A100_NVLINK_BW_PER_DIRECTION_BPS,
+    A100_NVLINK_LINK_COUNT_PER_DEVICE,
+)
+from nandmachine.config.GPU_config.H100 import (
+    H100_FLIT_SIZE_BYTES,
+    H100_HEADER_SIZE_BYTES,
+    H100_LINK_LATENCY_SEC,
+    H100_MAX_PAYLOAD_SIZE_BYTES,
+    H100_NVLINK_BW_BIDIR_BPS,
+    H100_NVLINK_BW_PER_DIRECTION_BPS,
+    H100_PCIE_NVLINK_LINK_COUNT_PER_DEVICE,
+    H100_SXM_NVLINK_LINK_COUNT_PER_DEVICE,
+)
+from nandmachine.config.GPU_config.H200 import (
+    H200_FLIT_SIZE_BYTES,
+    H200_HEADER_SIZE_BYTES,
+    H200_LINK_LATENCY_SEC,
+    H200_MAX_PAYLOAD_SIZE_BYTES,
+    H200_NVLINK_BW_BIDIR_BPS,
+    H200_NVLINK_BW_PER_DIRECTION_BPS,
+    H200_NVL_NVLINK_LINK_COUNT_PER_DEVICE,
+    H200_SXM_NVLINK_LINK_COUNT_PER_DEVICE,
+)
+
 
 class TopologyType(Enum):
     RING = auto()
@@ -27,7 +57,22 @@ class LinkModule:
 
 
 link_module_dict = {
-    "NVLinkV3": LinkModule(25e9, 50e9, 8.92e-6, 16, 256, 16),
+    "NVLinkV3": LinkModule(
+        A100_NVLINK_BW_PER_DIRECTION_BPS,
+        A100_NVLINK_BW_BIDIR_BPS,
+        A100_LINK_LATENCY_SEC,
+        A100_FLIT_SIZE_BYTES,
+        A100_MAX_PAYLOAD_SIZE_BYTES,
+        A100_HEADER_SIZE_BYTES,
+    ),
+    "NVLinkV4": LinkModule(
+        H100_NVLINK_BW_PER_DIRECTION_BPS,
+        H100_NVLINK_BW_BIDIR_BPS,
+        H100_LINK_LATENCY_SEC,
+        H100_FLIT_SIZE_BYTES,
+        H100_MAX_PAYLOAD_SIZE_BYTES,
+        H100_HEADER_SIZE_BYTES,
+    ),
 }
 
 
@@ -52,9 +97,49 @@ class InterConnectModule:
 
 interconnect_module_dict = {
     "NVLinkV3_FC_4": InterConnectModule(
-        4, TopologyType.FC, link_module_dict["NVLinkV3"], 12
+        4, TopologyType.FC, link_module_dict["NVLinkV3"], A100_NVLINK_LINK_COUNT_PER_DEVICE
+    ),
+    "H100_SXM_NVLinkV4_FC_4": InterConnectModule(
+        4, TopologyType.FC, link_module_dict["NVLinkV4"], H100_SXM_NVLINK_LINK_COUNT_PER_DEVICE
+    ),
+    "H100_PCIE_NVLinkV4_FC_4": InterConnectModule(
+        4, TopologyType.FC, link_module_dict["NVLinkV4"], H100_PCIE_NVLINK_LINK_COUNT_PER_DEVICE
+    ),
+    "H200_SXM_NVLinkV4_FC_4": InterConnectModule(
+        4, TopologyType.FC, link_module_dict["NVLinkV4"], H200_SXM_NVLINK_LINK_COUNT_PER_DEVICE
+    ),
+    "H200_NVL_NVLinkV4_FC_4": InterConnectModule(
+        4, TopologyType.FC, link_module_dict["NVLinkV4"], H200_NVL_NVLINK_LINK_COUNT_PER_DEVICE
     ),
 }
+
+device_interconnect_profile_dict: dict[str, tuple[str, int]] = {
+    "A100_80GB": ("NVLinkV3", A100_NVLINK_LINK_COUNT_PER_DEVICE),
+    "H100_SXM": ("NVLinkV4", H100_SXM_NVLINK_LINK_COUNT_PER_DEVICE),
+    "H100_PCIE": ("NVLinkV4", H100_PCIE_NVLINK_LINK_COUNT_PER_DEVICE),
+    "H200_SXM": ("NVLinkV4", H200_SXM_NVLINK_LINK_COUNT_PER_DEVICE),
+    "H200_NVL": ("NVLinkV4", H200_NVL_NVLINK_LINK_COUNT_PER_DEVICE),
+}
+
+
+def get_interconnect_for_device_or_raise(
+    device_name: str,
+    device_count: int,
+    topology: TopologyType = TopologyType.FC,
+) -> InterConnectModule:
+    if device_name not in device_interconnect_profile_dict:
+        raise ValueError(f"Unsupported device_name for interconnect: {device_name}")
+    if device_count <= 0:
+        raise ValueError(f"device_count must be positive, got {device_count}")
+    link_key, link_count_per_device = device_interconnect_profile_dict[device_name]
+    if link_key not in link_module_dict:
+        raise ValueError(f"Unsupported link_key={link_key} for device_name={device_name}")
+    return InterConnectModule(
+        device_count=device_count,
+        topology=topology,
+        link_module=link_module_dict[link_key],
+        link_count_per_device=link_count_per_device,
+    )
 
 
 MoEParamDict = Dict[str, float]

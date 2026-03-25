@@ -145,9 +145,10 @@ class ReduceScatterOp(MacroOp):
 
 @dataclass
 class All2AllOp(MacroOp):
-    num_ranks:int 
+    num_gpus:int
 
-    data_size:int # 对于 all to all 而言，data_size 表示 单个 rank 给任意一个 rank 发送的数据量，发送的总数据量是 num_ranks * data_size
+    data_size:int # For all-to-all, data_size means bytes sent from one rank to one peer rank.
+    weight_bits:int
 
 
 
