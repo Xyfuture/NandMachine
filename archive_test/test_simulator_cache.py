@@ -1,10 +1,18 @@
-from Desim import SimSession
+from Desim import SimModule, SimSession, SimTime
 
 import nandmachine.simulator.hardware.xpu as xpu_module
 
-from nandmachine.commands.macro import All2AllOp, FlashAttnOp, MatMulOp
+from nandmachine.commands.macro import (
+    All2AllOp,
+    AllGatherOp,
+    AllReduceOp,
+    FlashAttnOp,
+    MatMulOp,
+    ReduceScatterOp,
+)
 from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import A100_80GB_FP16
+from nandmachine.simulator.hardware.utils import DepSlot
 from nandmachine.simulator.software.flash_attention import (
     FlashAttn_BatchedMatMul_Simulation,
 )
@@ -188,7 +196,6 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
     matmul_calls: list[tuple[tuple[int, int, int], int]] = []
     flash_calls: list[tuple[tuple[int, int, int, int], int, str]] = []
     softmax_calls: list[tuple[tuple[int, int], int]] = []
-    all2all_calls: list[tuple[int, int, int]] = []
 
     class FakeMatMulSimulation:
         def compile_and_simulate(self, pcb_module, compile_mode):
@@ -207,13 +214,6 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
 
         def compile_and_simulate(self, pcb_module, compile_mode):
             return 31
-
-    class FakeAllToAllSimulation:
-        def __init__(self, num_gpus, data_size, weight_bits):
-            all2all_calls.append((num_gpus, data_size, weight_bits))
-
-        def compile_and_simulate(self, pcb_module, interconnect_module, compile_mode):
-            return 77
 
     def fake_matmul_get_instance(dim, weight_bits=16):
         matmul_calls.append((dim, weight_bits))
@@ -242,6 +242,56 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
         "Softmax_Simulation",
         FakeSoftmaxSimulation,
     )
+
+    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=16))
+    flash_cycles = engine.execute_macro_op(
+        FlashAttnOp(
+            qk_bmm_shape=(2, 4, 8, 6),
+            sv_bmm_shape=(2, 4, 6, 3),
+            softmax_shape=(4, 6),
+            weight_bits=16,
+        )
+    )
+
+    assert matmul_cycles == 101
+    assert flash_cycles == 151
+    assert matmul_calls == [((9, 1, 11), 8)]
+    assert flash_calls == [
+        ((2, 4, 8, 6), 8, "QK"),
+        ((2, 4, 6, 3), 8, "SV"),
+    ]
+    assert softmax_calls == [((4, 6), 8)]
+
+    SimSession.reset()
+
+
+def test_transfer_engine_accepts_supported_transfer_ops():
+    SimSession.reset()
+    SimSession.init()
+
+    engine = xpu_module.TransferEngine()
+
+    assert engine.execute_macro_op(AllReduceOp(num_ranks=4, data_size=128)) == 1.0
+    assert engine.execute_macro_op(AllGatherOp(num_ranks=4, data_size=128)) == 1.0
+    assert engine.execute_macro_op(ReduceScatterOp(num_ranks=4, data_size=128)) == 1.0
+
+    SimSession.reset()
+
+
+def test_transfer_engine_all2all_uses_estimate_path(monkeypatch):
+    SimSession.reset()
+    SimSession.init()
+
+    engine = xpu_module.TransferEngine(weight_bits=8)
+    all2all_calls: list[tuple[int, int, int]] = []
+
+    class FakeAllToAllSimulation:
+        def __init__(self, num_gpus, data_size, weight_bits):
+            all2all_calls.append((num_gpus, data_size, weight_bits))
+
+        def compile_and_simulate(self, pcb_module, interconnect_module, compile_mode):
+            return 77
+
     monkeypatch.setattr(
         xpu_module,
         "AllToAllPrimitive_Simulation",
@@ -253,28 +303,65 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
         lambda device_name, device_count: object(),
     )
 
-    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=16))
-    flash_cycles = engine.execute_macro_op(
-        FlashAttnOp(
-            qk_bmm_shape=(2, 4, 8, 6),
-            sv_bmm_shape=(2, 4, 6, 3),
-            softmax_shape=(4, 6),
-            weight_bits=16,
-        )
-    )
     all2all_cycles = engine.execute_macro_op(
         All2AllOp(num_gpus=4, data_size=128, weight_bits=16)
     )
 
-    assert matmul_cycles == 101
-    assert flash_cycles == 151
     assert all2all_cycles == 77
-    assert matmul_calls == [((9, 1, 11), 8)]
-    assert flash_calls == [
-        ((2, 4, 8, 6), 8, "QK"),
-        ((2, 4, 6, 3), 8, "SV"),
-    ]
-    assert softmax_calls == [((4, 6), 8)]
     assert all2all_calls == [(4, 64, 8)]
+
+    SimSession.reset()
+
+
+def test_transfer_engine_rejects_compute_ops():
+    SimSession.reset()
+    SimSession.init()
+
+    engine = xpu_module.TransferEngine()
+
+    try:
+        engine.execute_macro_op(MatMulOp(dim=(2, 4, 8), weight_bits=16))
+        assert False, "Expected TypeError for compute op in transfer engine"
+    except TypeError:
+        pass
+
+    SimSession.reset()
+
+
+def test_transfer_engine_waits_for_dependency_before_running(monkeypatch):
+    class DelayedFinish(SimModule):
+        def __init__(self, slot: DepSlot):
+            super().__init__()
+            self.slot = slot
+            self.register_coroutine(self.process)
+
+        def process(self):
+            SimModule.wait_time(SimTime(5))
+            self.slot.is_finished = True
+            self.slot.finish_event.notify(SimTime(1))
+
+    SimSession.reset()
+    SimSession.init()
+
+    dependency_slot = DepSlot(AllReduceOp(num_ranks=4, data_size=64))
+    transfer_slot = DepSlot(All2AllOp(num_gpus=4, data_size=128, weight_bits=16))
+    transfer_slot.input_slots = [dependency_slot]
+
+    engine = xpu_module.TransferEngine()
+    engine.load_command_queue([transfer_slot])
+
+    execute_start_cycles: list[int] = []
+
+    def fake_execute_macro_op(macro_op):
+        execute_start_cycles.append(int(SimSession.sim_time.cycle))
+        return 3.0
+
+    monkeypatch.setattr(engine, "execute_macro_op", fake_execute_macro_op)
+
+    DelayedFinish(dependency_slot)
+    SimSession.scheduler.run()
+
+    assert execute_start_cycles == [6]
+    assert transfer_slot.is_finished is True
 
     SimSession.reset()

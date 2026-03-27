@@ -4,9 +4,12 @@ from Desim import SimModule, SimTime
 
 from nandmachine.commands.macro import (
     All2AllOp,
+    AllGatherOp,
+    AllReduceOp,
     FlashAttnOp,
     MacroOp,
     MatMulOp,
+    ReduceScatterOp,
     SramPrefetch,
     SramPrefetchRelease,
     VectorOp,
@@ -21,6 +24,9 @@ from nandmachine.simulator.software.communication_primitives_of_MoE import (
 )
 from nandmachine.simulator.software.flash_attention import FlashAttn_BatchedMatMul_Simulation, Softmax_Simulation
 from nandmachine.simulator.software.matmul import MatMul_Simulation
+
+
+TRANSFER_OP_TYPES = (AllReduceOp, AllGatherOp, ReduceScatterOp, All2AllOp)
 
 
 class PerfetchEngine(SimModule):
@@ -258,41 +264,6 @@ class ComputeEngine(SimModule):
 
         return qk_cycles + softmax_cycles + sv_cycles
 
-    def _estimate_all2all_cycles(self, macro_op: All2AllOp) -> float:
-        if macro_op.num_gpus <= 0:
-            raise ValueError(f"num_gpus must be positive, got {macro_op.num_gpus}")
-        if macro_op.data_size < 0:
-            raise ValueError(f"data_size must be non-negative, got {macro_op.data_size}")
-        if macro_op.num_gpus == 1 or macro_op.data_size == 0:
-            return 1.0
-
-        interconnect = get_interconnect_for_device_or_raise(
-            device_name=self.device_name,
-            device_count=macro_op.num_gpus,
-        )
-
-        source_word_size = self._bytes_per_value(macro_op.weight_bits)
-        target_word_size = self._bytes_per_value(self.weight_bits)
-        if macro_op.data_size % source_word_size != 0:
-            raise ValueError(
-                "All2AllOp.data_size must be divisible by source word size. "
-                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
-            )
-        num_values = macro_op.data_size // source_word_size
-        target_data_size = num_values * target_word_size
-
-        all2all_sim = AllToAllPrimitive_Simulation(
-            num_gpus=macro_op.num_gpus,
-            data_size=target_data_size,
-            weight_bits=self.weight_bits,
-        )
-        all2all_cycles = all2all_sim.compile_and_simulate(
-            pcb_module=self.device,
-            interconnect_module=interconnect,
-            compile_mode=self.compile_mode,
-        )
-        return max(1.0, float(all2all_cycles))
-
     def _is_invalid_cycle_count(self, cycles: float) -> bool:
         return not math.isfinite(cycles) or cycles <= 0 or cycles >= 2**63 - 1
 
@@ -366,9 +337,6 @@ class ComputeEngine(SimModule):
         if isinstance(macro_op, VectorOp):
             return self._estimate_vector_cycles(macro_op)
 
-        if isinstance(macro_op, All2AllOp):
-            return self._estimate_all2all_cycles(macro_op)
-
         raise TypeError(f"Unsupported macro op type: {type(macro_op).__name__}")
 
 
@@ -379,15 +347,94 @@ class ComputeEngine(SimModule):
 
 
 
-class TransferEgine(SimModule):
-    def __init__(self):
+class TransferEngine(SimModule):
+    def __init__(
+        self,
+        *,
+        device_name: str = "A100_80GB",
+        compile_mode: str = "heuristic-GPU",
+        weight_bits: int = 16,
+    ):
         super().__init__()
+
+        if device_name not in device_dict:
+            raise ValueError(f"Unsupported device_name: {device_name}")
+
+        self.device_name = device_name
+        self.compile_mode = compile_mode
+        self.weight_bits = weight_bits
+        self.device: Device = device_dict[device_name]
+        self.transfer_command_queue:list[DepSlot[MacroOp]] = []
 
 
         self.register_coroutine(self.process)
     
     def process(self):
-        pass 
+        for macro_op_slot in self.transfer_command_queue:
+            for input_slot in macro_op_slot.input_slots:
+                if not input_slot.is_finished:
+                    SimModule.wait(input_slot.finish_event)
+
+            cycles = self.execute_macro_op(macro_op_slot.payload)
+            execute_cycles = max(1, math.ceil(cycles))
+            SimModule.wait_time(SimTime(execute_cycles))
+            macro_op_slot.finish_event.notify(SimTime(1))
+            SimModule.wait(macro_op_slot.finish_event)
+            macro_op_slot.is_finished = True
+
+    def _bytes_per_value(self, weight_bits: int) -> int:
+        supported_weight_bits = {8, 16}
+        if weight_bits not in supported_weight_bits:
+            raise ValueError(
+                f"Unsupported weight_bits={weight_bits}, expected one of {sorted(supported_weight_bits)}"
+            )
+        return weight_bits // 8
+
+    def _estimate_all2all_cycles(self, macro_op: All2AllOp) -> float:
+        if macro_op.num_gpus == 1 or macro_op.data_size == 0:
+            return 1.0
+
+        interconnect = get_interconnect_for_device_or_raise(
+            device_name=self.device_name,
+            device_count=macro_op.num_gpus,
+        )
+
+        source_word_size = self._bytes_per_value(macro_op.weight_bits)
+        target_word_size = self._bytes_per_value(self.weight_bits)
+        if macro_op.data_size % source_word_size != 0:
+            raise ValueError(
+                "All2AllOp.data_size must be divisible by source word size. "
+                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
+            )
+        num_values = macro_op.data_size // source_word_size
+        target_data_size = num_values * target_word_size
+
+        all2all_sim = AllToAllPrimitive_Simulation(
+            num_gpus=macro_op.num_gpus,
+            data_size=target_data_size,
+            weight_bits=self.weight_bits,
+        )
+        all2all_cycles = all2all_sim.compile_and_simulate(
+            pcb_module=self.device,
+            interconnect_module=interconnect,
+            compile_mode=self.compile_mode,
+        )
+        return max(1.0, float(all2all_cycles))
+
+    def execute_macro_op(self,macro_op:MacroOp)->float:
+        # 使用 llm compass 的模拟器，实现 基础通信的原语的 时间仿真，返回一个 cycle 数
+        if isinstance(macro_op, All2AllOp):
+            return self._estimate_all2all_cycles(macro_op)
+
+        if isinstance(macro_op, TRANSFER_OP_TYPES):
+            return 1.0
+
+        raise TypeError(f"Unsupported macro op type: {type(macro_op).__name__}")
+
+
+    def load_command_queue(self,command_queue:list[DepSlot[MacroOp]]):
+
+        self.transfer_command_queue = command_queue
     
 
 
@@ -418,6 +465,11 @@ class xPU(SimModule):
             compile_mode=compile_mode,
             weight_bits=weight_bits,
         )
+        self.transfer_engine = TransferEngine(
+            device_name=device_name,
+            compile_mode=compile_mode,
+            weight_bits=weight_bits,
+        )
         self.prefetch_engine = PerfetchEngine(self.nand_controller)
 
 
@@ -429,6 +481,7 @@ class xPU(SimModule):
         # 然后分发到不同的 Engine 中去执行
 
         prefetch_engine_slot_list:list[DepSlot[MacroOp]] = []
+        transfer_engine_slot_list:list[DepSlot[MacroOp]] = []
         compute_engine_slot_list:list[DepSlot[MacroOp]] = []
 
         slot_map:dict[int,DepSlot[MacroOp]] = {}
@@ -467,9 +520,12 @@ class xPU(SimModule):
             elif isinstance(command,SramPrefetchRelease):
                 slot.is_finished = True
                 continue
+            elif isinstance(command,TRANSFER_OP_TYPES):
+                transfer_engine_slot_list.append(slot)
             else:
                 compute_engine_slot_list.append(slot)
         
         # 注入到不同的 engine 中
         self.prefetch_engine.load_command_queue(prefetch_engine_slot_list)
+        self.transfer_engine.load_command_queue(transfer_engine_slot_list)
         self.compute_engine.load_command_queue(compute_engine_slot_list)

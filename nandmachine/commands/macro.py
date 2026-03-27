@@ -162,5 +162,7 @@ __all__ = [
     "FlashAttnOp",
     "VectorOp",
     "AllReduceOp",
+    "AllGatherOp",
+    "ReduceScatterOp",
     "All2AllOp",
 ]

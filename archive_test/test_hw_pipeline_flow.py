@@ -1,6 +1,7 @@
 from Desim import SimSession
 
 from nandmachine.commands.macro import (
+    All2AllOp,
     FlashAttnOp,
     MatMulOp,
     SramPrefetch,
@@ -39,6 +40,36 @@ def test_xpu_instances_keep_their_own_compute_settings():
     assert throughput_xpu.compute_engine.compile_mode == "heuristic-our-throughput"
     assert fast_xpu.compute_engine.device_name == "A100_80GB"
     assert throughput_xpu.compute_engine.device_name == "A100_80GB"
+
+    SimSession.reset()
+
+
+def test_xpu_routes_transfer_ops_to_transfer_engine():
+    config = make_config()
+
+    prefetch = SramPrefetch(num_prefetch_pages=2)
+    transfer = All2AllOp(num_gpus=4, data_size=128, weight_bits=16).with_inputs(prefetch)
+    matmul = MatMulOp(dim=(2, 16, 8), weight_bits=16).with_inputs(transfer)
+
+    SimSession.reset()
+    SimSession.init()
+
+    sim_xpu = xPU(config)
+    sim_xpu.load_command([prefetch, transfer, matmul])
+
+    assert [slot.payload for slot in sim_xpu.prefetch_engine.prefetch_command_queue] == [
+        prefetch
+    ]
+    assert [slot.payload for slot in sim_xpu.transfer_engine.transfer_command_queue] == [
+        transfer
+    ]
+    assert [slot.payload for slot in sim_xpu.compute_engine.command_queue] == [matmul]
+    assert sim_xpu.transfer_engine.transfer_command_queue[0].input_slots == [
+        sim_xpu.prefetch_engine.prefetch_command_queue[0]
+    ]
+    assert sim_xpu.compute_engine.command_queue[0].input_slots == [
+        sim_xpu.transfer_engine.transfer_command_queue[0]
+    ]
 
     SimSession.reset()
 
