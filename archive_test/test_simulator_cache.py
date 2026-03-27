@@ -271,9 +271,43 @@ def test_transfer_engine_accepts_supported_transfer_ops():
 
     engine = xpu_module.TransferEngine()
 
-    assert engine.execute_macro_op(AllReduceOp(num_ranks=4, data_size=128)) == 1.0
     assert engine.execute_macro_op(AllGatherOp(num_ranks=4, data_size=128)) == 1.0
     assert engine.execute_macro_op(ReduceScatterOp(num_ranks=4, data_size=128)) == 1.0
+
+    SimSession.reset()
+
+
+def test_transfer_engine_allreduce_uses_estimate_path(monkeypatch):
+    SimSession.reset()
+    SimSession.init()
+
+    engine = xpu_module.TransferEngine(weight_bits=8)
+    allreduce_calls: list[tuple[int, int, int]] = []
+
+    class FakeAllReduceSimulation:
+        def __init__(self, num_gpus, data_size, weight_bits):
+            allreduce_calls.append((num_gpus, data_size, weight_bits))
+
+        def compile_and_simulate(self, pcb_module, interconnect_module, compile_mode):
+            return 66
+
+    monkeypatch.setattr(
+        xpu_module,
+        "AllReduceSimulation",
+        FakeAllReduceSimulation,
+    )
+    monkeypatch.setattr(
+        xpu_module,
+        "get_interconnect_for_device_or_raise",
+        lambda device_name, device_count: object(),
+    )
+
+    allreduce_cycles = engine.execute_macro_op(
+        AllReduceOp(num_ranks=4, data_size=128, weight_bits=16)
+    )
+
+    assert allreduce_cycles == 66
+    assert allreduce_calls == [(4, 64, 8)]
 
     SimSession.reset()
 
@@ -343,7 +377,7 @@ def test_transfer_engine_waits_for_dependency_before_running(monkeypatch):
     SimSession.reset()
     SimSession.init()
 
-    dependency_slot = DepSlot(AllReduceOp(num_ranks=4, data_size=64))
+    dependency_slot = DepSlot(AllReduceOp(num_ranks=4, data_size=64, weight_bits=16))
     transfer_slot = DepSlot(All2AllOp(num_gpus=4, data_size=128, weight_bits=16))
     transfer_slot.input_slots = [dependency_slot]
 

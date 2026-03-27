@@ -122,9 +122,9 @@ class VectorOp(MacroOp):
 @dataclass
 class AllReduceOp(MacroOp):
     num_ranks:int  # 这次通信，集合的规模是多大
-    
-    data_size:int # 集合通信, 传输的大小
-    # 对于 all reduce 而言，就是每个 rank 给其他每个 rank 发送的数据量，最后自己得到一个 data_size 大小的结果
+
+    data_size:int # For all-reduce, data_size means bytes sent from one rank to one peer rank.
+    weight_bits:int
     
 
 @dataclass
