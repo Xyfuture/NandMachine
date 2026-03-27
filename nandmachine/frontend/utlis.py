@@ -29,11 +29,24 @@ def _resolve_dp_size(parallel_config: ParallelConfig | None) -> int:
     return parallel_config.num_ranks
 
 
-def _resolve_attention_layout(model_config: ModelConfigBase) -> _AttentionLayout:
+def _resolve_tp_size(parallel_config: ParallelConfig | None) -> int:
+    if parallel_config is None or not hasattr(parallel_config, "tp_size"):
+        return 1
+    tp_size = parallel_config.tp_size
+    if tp_size <= 0:
+        raise ValueError(f"tp_size must be > 0, got {tp_size}")
+    return tp_size
+
+
+def _resolve_attention_layout(
+    model_config: ModelConfigBase,
+    parallel_config: ParallelConfig | None,
+) -> _AttentionLayout:
     attention_type = model_config.attention_type.lower()
     head_dim = model_config.head_dim or (
         model_config.hidden_size // model_config.num_attention_heads
     )
+    tp_size = _resolve_tp_size(parallel_config)
 
     match attention_type:
         case "mha":
@@ -45,7 +58,12 @@ def _resolve_attention_layout(model_config: ModelConfigBase) -> _AttentionLayout
         case _:
             assert False, f"Unsupported attention_type: {model_config.attention_type}"
 
-    return _AttentionLayout(num_kv_heads=num_kv_heads, head_dim=head_dim)
+    if num_kv_heads % tp_size != 0:
+        raise ValueError(
+            f"num_kv_heads must be divisible by tp_size, got {num_kv_heads} and {tp_size}"
+        )
+
+    return _AttentionLayout(num_kv_heads=num_kv_heads // tp_size, head_dim=head_dim)
 
 
 def calculate_kv_cache_state(
@@ -59,7 +77,10 @@ def calculate_kv_cache_state(
     assert inference_config.kv_cache_bits > 0
     assert inference_config.kv_block_size_bytes > 0
 
-    layout = _resolve_attention_layout(model_config)
+    layout = _resolve_attention_layout(
+        model_config,
+        inference_config.parallel_config,
+    )
     dp_size = _resolve_dp_size(inference_config.parallel_config)
     assert dp_size > 0
     rank_batch = (inference_config.batch_size + dp_size - 1) // dp_size

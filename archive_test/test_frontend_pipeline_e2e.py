@@ -10,7 +10,7 @@ from torch.fx import GraphModule
 
 from nandmachine.commands.macro import FlashAttnOp, MacroOp, MatMulOp, VectorOp
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import InferenceConfig, ParallelConfig
+from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig
 from nandmachine.config.model_config import Qwen3ModelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta, NxTracer
 from nandmachine.frontend.core.passes.cod_gen import CodeGenPass
@@ -52,7 +52,7 @@ def _build_inference_config() -> InferenceConfig:
         activation_bits=16,
         kv_cache_bits=16,
         kv_block_size_bytes=1024,
-        parallel_config=ParallelConfig(num_ranks=1),
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
     )
 
 
@@ -91,7 +91,7 @@ def _build_sim_inference_config() -> InferenceConfig:
         activation_bits=16,
         kv_cache_bits=16,
         kv_block_size_bytes=64,
-        parallel_config=ParallelConfig(num_ranks=1),
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
     )
 
 
@@ -107,7 +107,7 @@ def _generate_macro_ops(
     )
 
     with torch.device("meta"):
-        model = Qwen3DecoderLayer(model_config)
+        model = Qwen3DecoderLayer(model_config, tp_size=1)
         graph = NxTracer().trace(model)
         graph_module = GraphModule(model, graph)
 

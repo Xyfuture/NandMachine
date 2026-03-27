@@ -280,6 +280,7 @@ class FusedMoE(HookModuleBase):
         if parallel_config.ffn_ep_size > 1:
             macro_op_list.append(self._build_all_to_all_op(graph_meta))
 
+        # TODO 这里不能直接这么算， 因为 route 完之后，不同的 expert 分到的token 是不一样的，应该取个平均数 
         for expert in self.experts[:local_expert_count]:
             macro_op_list.extend(expert.macro_code_gen(graph_meta))
 
@@ -328,6 +329,7 @@ class Qwen3MoEDecoderLayer(nn.Module):
             hidden_size=moe_config.hidden_size,
             num_heads=moe_config.num_attention_heads,
             num_kv_heads=moe_config.num_key_value_heads,
+            tp_size=TP_SIZE,
             max_position=moe_config.max_position_embeddings,
             head_dim=moe_config.head_dim,
             rms_norm_eps=moe_config.rms_norm_eps,

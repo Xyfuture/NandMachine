@@ -15,16 +15,13 @@ from nandmachine.frontend.modules.modules import (
     SiluAndMul,
 )
 
-
-TP_SIZE = 1
-
-
 class Qwen3Attention(nn.Module):
     def __init__(
         self,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
+        tp_size: int,
         max_position: int = 4096 * 32,
         head_dim: int | None = None,
         rms_norm_eps: float = 1e-6,
@@ -32,10 +29,22 @@ class Qwen3Attention(nn.Module):
         rope_theta: float = 10000.0,
     ) -> None:
         super().__init__()
+        if tp_size <= 0:
+            raise ValueError(f"tp_size must be > 0, got {tp_size}")
+        if num_heads % tp_size != 0:
+            raise ValueError(
+                f"num_heads must be divisible by tp_size, got {num_heads} and {tp_size}"
+            )
+        if num_kv_heads % tp_size != 0:
+            raise ValueError(
+                f"num_kv_heads must be divisible by tp_size, got {num_kv_heads} and {tp_size}"
+            )
+
+        self.tp_size = tp_size
         self.total_num_heads = num_heads
-        self.num_heads = num_heads
+        self.num_heads = num_heads // tp_size
         self.total_num_kv_heads = num_kv_heads
-        self.num_kv_heads = num_kv_heads
+        self.num_kv_heads = num_kv_heads // tp_size
         self.head_dim = head_dim or hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
@@ -47,13 +56,13 @@ class Qwen3Attention(nn.Module):
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
-            tp_size=TP_SIZE,
+            tp_size=tp_size,
             bias=qkv_bias,
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
-            tp_size=TP_SIZE,
+            tp_size=tp_size,
             bias=False,
         )
         self.rotary_emb = RotaryEmbedding(
@@ -105,23 +114,32 @@ class Qwen3MLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        tp_size: int,
     ) -> None:
         super().__init__()
         if hidden_act != "silu":
             raise ValueError(f"Unsupported hidden_act: {hidden_act}")
+        if tp_size <= 0:
+            raise ValueError(f"tp_size must be > 0, got {tp_size}")
+        if intermediate_size % tp_size != 0:
+            raise ValueError(
+                "intermediate_size must be divisible by tp_size, "
+                f"got {intermediate_size} and {tp_size}"
+            )
 
         self.intermediate_size = intermediate_size
+        self.local_intermediate_size = intermediate_size // tp_size
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             intermediate_size * 2,
-            tp_size=TP_SIZE,
+            tp_size=tp_size,
             bias=False,
         )
-        self.act_fn = SiluAndMul(hidden_dim=intermediate_size)
+        self.act_fn = SiluAndMul(hidden_dim=self.local_intermediate_size)
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
-            tp_size=TP_SIZE,
+            tp_size=tp_size,
             bias=False,
         )
 
@@ -129,21 +147,24 @@ class Qwen3MLP(nn.Module):
         gate_up = self.gate_up_proj(x)
         # SiluAndMul derives hidden_dim from the last axis, so expand a view that
         # preserves the expected intermediate size without changing modules.py.
-        act_input = gate_up.unsqueeze(1).repeat_interleave(
-            self.intermediate_size * 2,
-            dim=1,
+        act_input = gate_up.unsqueeze(1).expand(
+            -1,
+            self.local_intermediate_size * 2,
+            -1,
+            -1,
         )
-        activated = self.act_fn(act_input)[..., : self.intermediate_size]
+        activated = self.act_fn(act_input)[..., : self.local_intermediate_size]
         return self.down_proj(activated)
 
 
 class Qwen3DecoderLayer(nn.Module):
-    def __init__(self, config: Qwen3ModelConfig) -> None:
+    def __init__(self, config: Qwen3ModelConfig, tp_size: int) -> None:
         super().__init__()
         self.self_attn = Qwen3Attention(
             hidden_size=config.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
+            tp_size=tp_size,
             max_position=config.max_position_embeddings,
             head_dim=config.head_dim,
             rms_norm_eps=config.rms_norm_eps,
@@ -154,6 +175,7 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            tp_size=tp_size,
         )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(

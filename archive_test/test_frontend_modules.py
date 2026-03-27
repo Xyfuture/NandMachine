@@ -7,6 +7,7 @@ from nandmachine.frontend.core.graph.base import NxTracer
 from nandmachine.frontend.modules.modules import (
     Attention,
     ColumnParallelLinear,
+    LinearBase,
     RMSNorm,
     RotaryEmbedding,
     RowParallelLinear,
@@ -38,6 +39,27 @@ def test_row_parallel_linear_forward_updates_last_dim():
     y = module(x)
 
     assert y.shape == (2, 5, 16)
+
+
+def test_linear_base_uses_plain_weight_shape():
+    module = LinearBase(input_size=16, output_size=24, bias=False)
+
+    assert module.weight.shape == (24, 16)
+
+
+def test_parallel_linear_modules_keep_local_weight_shape_and_tp_info():
+    column = ColumnParallelLinear(input_size=16, output_size=24, tp_size=2)
+    row = RowParallelLinear(input_size=24, output_size=16, tp_size=2)
+
+    assert column.weight.shape == (12, 16)
+    assert column.tp_size == 2
+    assert column.tp_rank == 0
+    assert column.tp_dim == 0
+
+    assert row.weight.shape == (16, 12)
+    assert row.tp_size == 2
+    assert row.tp_rank == 0
+    assert row.tp_dim == 1
 
 
 def test_rotary_embedding_forward_keeps_qk_shapes():

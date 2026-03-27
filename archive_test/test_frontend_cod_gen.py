@@ -7,10 +7,10 @@ torch = pytest.importorskip("torch")
 
 from torch.fx import GraphModule
 
-from nandmachine.commands.macro import MatMulOp, VectorOp
+from nandmachine.commands.macro import AllReduceOp, MatMulOp, VectorOp
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import InferenceConfig, ParallelConfig
+from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig, ParallelConfig
 from nandmachine.config.model_config import ModelConfigBase
 from nandmachine.frontend.core.graph.base import NxGraphMeta, NxTracer
 from nandmachine.frontend.core.passes.cod_gen import CodeGenPass
@@ -19,6 +19,7 @@ from nandmachine.frontend.modules.modules import (
     ColumnParallelLinear,
     HookModuleBase,
     RMSNorm,
+    RowParallelLinear,
 )
 
 
@@ -27,7 +28,9 @@ def _trace_graph_module(model: torch.nn.Module) -> GraphModule:
     return GraphModule(model, graph)
 
 
-def _build_graph_meta() -> NxGraphMeta:
+def _build_graph_meta(
+    parallel_config: ParallelConfig | None = None,
+) -> NxGraphMeta:
     return NxGraphMeta(
         nand_config=NandConfig(
             num_channels=1,
@@ -49,7 +52,7 @@ def _build_graph_meta() -> NxGraphMeta:
             activation_bits=16,
             kv_cache_bits=16,
             kv_block_size_bytes=1024,
-            parallel_config=ParallelConfig(num_ranks=1),
+            parallel_config=parallel_config or ParallelConfig(num_ranks=1),
         ),
         kv_cache_state=KVCacheState(
             total_kv_cache_size_per_layer=1024,
@@ -204,6 +207,24 @@ def test_codegen_pass_handles_linear_hooks_with_small_sram_threshold():
 
     assert macro_op_list
     assert any(isinstance(macro_op, MatMulOp) for macro_op in macro_op_list)
+
+
+def test_row_parallel_linear_codegen_appends_all_reduce_for_tp():
+    graph_meta = _build_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1)
+    )
+    module = RowParallelLinear(input_size=16, output_size=12, tp_size=2)
+
+    macro_op_list = module.macro_code_gen(graph_meta)
+    all_reduce_ops = [
+        macro_op for macro_op in macro_op_list if isinstance(macro_op, AllReduceOp)
+    ]
+
+    assert len(all_reduce_ops) == 1
+    assert all_reduce_ops[0].num_ranks == 2
+    assert all_reduce_ops[0].data_size == 48
+    assert all_reduce_ops[0].input_ops
+    assert all(isinstance(op, MatMulOp) for op in all_reduce_ops[0].input_ops)
 
 
 def test_codegen_pass_raises_when_graph_meta_is_missing():
