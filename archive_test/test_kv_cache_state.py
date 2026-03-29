@@ -7,7 +7,7 @@ from nandmachine.config.inference_config import (
     MoEParallelConfig,
     ParallelConfig,
 )
-from nandmachine.config.model_config import Qwen3ModelConfig
+from nandmachine.config.model_config import LlamaModelConfig, Qwen3ModelConfig
 from nandmachine.frontend.utlis import calculate_kv_cache_state
 
 
@@ -284,6 +284,37 @@ def test_calculate_kv_cache_state_uses_num_ranks_when_only_device_count_is_avail
     assert state.num_hyper_pages_per_layer == 24
     assert state.kv_block_size_tokens == 32
     assert state.num_kv_blocks == 1
+
+
+def test_calculate_kv_cache_state_supports_llama_gqa_config():
+    model_config = LlamaModelConfig(
+        hidden_size=16384,
+        num_attention_heads=128,
+        num_key_value_heads=8,
+        max_position_embeddings=131072,
+        intermediate_size=53248,
+        hidden_act="silu",
+        head_dim=128,
+    )
+    inference_config = make_inference_config(
+        batch_size=2,
+        input_sequence_length=16,
+        output_sequence_length=4,
+        kv_cache_bits=16,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    state = calculate_kv_cache_state(
+        make_nand_config(page_size=4, num_plane=2),
+        model_config,
+        inference_config,
+    )
+
+    assert state.total_kv_cache_size_per_layer == 163_840
+    assert state.num_nand_pages_per_layer == 40
+    assert state.num_hyper_pages_per_layer == 20
+    assert state.kv_block_size_tokens == 16
+    assert state.num_kv_blocks == 3
 
 
 def test_calculate_kv_cache_state_rounds_up_kv_block_size_tokens():

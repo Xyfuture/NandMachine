@@ -19,6 +19,9 @@ from nandmachine.config.hardware_config import Device, device_dict
 from nandmachine.config.interconnect_config import get_interconnect_for_device_or_raise
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
+from nandmachine.simulator.software.communication_primitives_of_dense import (
+    AllReduceSimulation,
+)
 from nandmachine.simulator.software.communication_primitives_of_MoE import (
     AllToAllPrimitive_Simulation,
 )
@@ -390,6 +393,37 @@ class TransferEngine(SimModule):
             )
         return weight_bits // 8
 
+    def _estimate_allreduce_cycles(self, macro_op: AllReduceOp) -> float:
+        if macro_op.num_ranks == 1 or macro_op.data_size == 0:
+            return 1.0
+
+        interconnect = get_interconnect_for_device_or_raise(
+            device_name=self.device_name,
+            device_count=macro_op.num_ranks,
+        )
+
+        source_word_size = self._bytes_per_value(macro_op.weight_bits)
+        target_word_size = self._bytes_per_value(self.weight_bits)
+        if macro_op.data_size % source_word_size != 0:
+            raise ValueError(
+                "AllReduceOp.data_size must be divisible by source word size. "
+                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
+            )
+        num_values = macro_op.data_size // source_word_size
+        target_data_size = num_values * target_word_size
+
+        allreduce_sim = AllReduceSimulation(
+            num_gpus=macro_op.num_ranks,
+            data_size=target_data_size,
+            weight_bits=self.weight_bits,
+        )
+        allreduce_cycles = allreduce_sim.compile_and_simulate(
+            pcb_module=self.device,
+            interconnect_module=interconnect,
+            compile_mode=self.compile_mode,
+        )
+        return max(1.0, float(allreduce_cycles))
+
     def _estimate_all2all_cycles(self, macro_op: All2AllOp) -> float:
         if macro_op.num_gpus == 1 or macro_op.data_size == 0:
             return 1.0
@@ -423,6 +457,9 @@ class TransferEngine(SimModule):
 
     def execute_macro_op(self,macro_op:MacroOp)->float:
         # 使用 llm compass 的模拟器，实现 基础通信的原语的 时间仿真，返回一个 cycle 数
+        if isinstance(macro_op, AllReduceOp):
+            return self._estimate_allreduce_cycles(macro_op)
+
         if isinstance(macro_op, All2AllOp):
             return self._estimate_all2all_cycles(macro_op)
 
