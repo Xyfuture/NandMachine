@@ -106,3 +106,31 @@ def test_hw_pipeline_flow_runs_with_current_macro_ops():
     )
 
     assert final_cycle > 0
+
+
+def test_hw_pipeline_flow_runs_without_prefetch_or_release():
+    config = make_config()
+
+    vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16])
+    matmul = MatMulOp(dim=(2, 16, 8), weight_bits=16).with_inputs(vector_norm)
+    vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8]).with_inputs(
+        matmul
+    )
+    flash_attn = FlashAttnOp(
+        qk_bmm_shape=(4, 2, 4, 2),
+        sv_bmm_shape=(4, 2, 2, 4),
+        softmax_shape=(8, 2),
+        weight_bits=16,
+    ).with_inputs(vector_act)
+
+    final_cycle = run_macro_ops(
+        config,
+        [
+            vector_norm,
+            matmul,
+            vector_act,
+            flash_attn,
+        ],
+    )
+
+    assert final_cycle > 0

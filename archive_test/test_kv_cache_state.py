@@ -41,6 +41,7 @@ def make_inference_config(
         activation_bits=16,
         kv_cache_bits=kv_cache_bits,
         kv_block_size_bytes=kv_block_size_bytes,
+        memory_backend="nand",
         parallel_config=parallel_config,
     )
 

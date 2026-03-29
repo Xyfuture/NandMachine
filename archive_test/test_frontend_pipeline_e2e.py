@@ -60,6 +60,7 @@ def _build_inference_config() -> InferenceConfig:
         activation_bits=16,
         kv_cache_bits=16,
         kv_block_size_bytes=1024,
+        memory_backend="nand",
         parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
     )
 
@@ -111,6 +112,7 @@ def _build_sim_inference_config() -> InferenceConfig:
         activation_bits=16,
         kv_cache_bits=16,
         kv_block_size_bytes=64,
+        memory_backend="nand",
         parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
     )
 

@@ -64,6 +64,8 @@ class LlamaAttention(nn.Module):
             head_dim=self.head_dim,
             scale=self.scaling,
             num_kv_heads=self.num_kv_heads,
+            tp_size=TP_SIZE,
+            dp_size=1,
         )
         self.register_buffer(
             "_dummy_positions",

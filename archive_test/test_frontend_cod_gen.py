@@ -52,6 +52,7 @@ def _build_graph_meta(
             activation_bits=16,
             kv_cache_bits=16,
             kv_block_size_bytes=1024,
+            memory_backend="nand",
             parallel_config=parallel_config or ParallelConfig(num_ranks=1),
         ),
         kv_cache_state=KVCacheState(

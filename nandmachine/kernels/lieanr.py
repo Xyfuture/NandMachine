@@ -5,7 +5,7 @@ import torch.fx as fx
 from nandmachine.commands.macro import * 
 from nandmachine.config.config import NandConfig
 from nandmachine.frontend.core.graph.base import NxGraph
-from nandmachine.kernels.base import NandKernelBase
+from nandmachine.kernels.base import HBMKernelBase, NandKernelBase
 from nandmachine.kernels.utils import PageTableAddrPreAllocator
 
 
@@ -60,7 +60,31 @@ class LinearNandKernel(NandKernelBase):
 
 
 
+class LinearHBMKernel(HBMKernelBase):
+    def __init__(self) -> None:
+        super().__init__()
 
+    @classmethod
+    def lowering(
+        cls,
+        m: int,
+        k: int,
+        n: int,
+        weight_bits: int,
+        input_bits: int,
+        nand_config: NandConfig,
+    )->list[MacroOp]:
+        del input_bits, nand_config
+
+        if m <= 0 or k <= 0 or n <= 0:
+            raise ValueError(f"LinearHBMKernel expects positive dims, got {(m, k, n)}")
+        if weight_bits <= 0 or weight_bits % 8 != 0:
+            raise ValueError(
+                f"weight_bits must be a positive multiple of 8, got {weight_bits}"
+            )
+
+        return [MatMulOp((m, k, n), weight_bits=weight_bits)]
+        
 
         
 

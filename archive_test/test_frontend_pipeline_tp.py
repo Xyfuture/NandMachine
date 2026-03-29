@@ -51,6 +51,7 @@ def _build_inference_config(tp_size: int) -> InferenceConfig:
         activation_bits=16,
         kv_cache_bits=16,
         kv_block_size_bytes=64,
+        memory_backend="nand",
         parallel_config=DenseParallelConfig(
             num_ranks=tp_size,
             tp_size=tp_size,

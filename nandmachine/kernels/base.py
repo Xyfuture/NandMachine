@@ -12,4 +12,11 @@ class NandKernelBase:
 
         self.pre_addr_allocator = PageTableAddrPreAllocator.get_instance()
 
-    
+
+
+class HBMKernelBase:
+    def __init__(self) -> None:
+        self.command_buffer:list[MacroOp] = []
+        self.global_command_buffer:list[MacroOp] = []
+
+        self.pre_addr_allocator = PageTableAddrPreAllocator.get_instance()

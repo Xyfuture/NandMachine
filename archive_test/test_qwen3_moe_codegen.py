@@ -9,8 +9,8 @@ from nandmachine.config.config import NandConfig
 from nandmachine.config.inference_config import InferenceConfig, MoEParallelConfig
 from nandmachine.config.model_config import ModelConfigBase
 from nandmachine.frontend.core.graph.base import NxGraphMeta
+from nandmachine.frontend.modules.modules import FusedMoE
 from nandmachine.frontend.network.qwen3_moe import (
-    FusedMoE,
     Qwen3MoEAttention,
     Qwen3MoEDecoderLayer,
 )
@@ -38,6 +38,7 @@ def _build_graph_meta(batch_size: int, parallel_config: MoEParallelConfig) -> Nx
             activation_bits=16,
             kv_cache_bits=16,
             kv_block_size_bytes=1024,
+            memory_backend="nand",
             parallel_config=parallel_config,
         ),
         kv_cache_state=KVCacheState(
@@ -55,6 +56,7 @@ def test_fused_moe_codegen_uses_expert_batch_size_for_expert_ops():
     graph_meta = _build_graph_meta(
         batch_size=5,
         parallel_config=MoEParallelConfig(
+            num_ranks=1,
             attn_dp_size=1,
             attn_tp_size=1,
             ffn_tp_size=1,
@@ -92,6 +94,7 @@ def test_fused_moe_codegen_clamps_expert_batch_size_to_one():
     graph_meta = _build_graph_meta(
         batch_size=1,
         parallel_config=MoEParallelConfig(
+            num_ranks=1,
             attn_dp_size=1,
             attn_tp_size=1,
             ffn_tp_size=1,
@@ -125,6 +128,7 @@ def test_fused_moe_codegen_keeps_global_batch_for_all_to_all_and_local_expert_co
     graph_meta = _build_graph_meta(
         batch_size=5,
         parallel_config=MoEParallelConfig(
+            num_ranks=2,
             attn_dp_size=2,
             attn_tp_size=1,
             ffn_tp_size=1,
@@ -158,6 +162,7 @@ def test_fused_moe_codegen_uses_ffn_tp_size_for_expert_ops():
     graph_meta = _build_graph_meta(
         batch_size=5,
         parallel_config=MoEParallelConfig(
+            num_ranks=4,
             attn_dp_size=4,
             attn_tp_size=1,
             ffn_tp_size=2,
@@ -194,6 +199,7 @@ def test_fused_moe_codegen_rejects_invalid_ffn_world_size():
     graph_meta = _build_graph_meta(
         batch_size=5,
         parallel_config=MoEParallelConfig(
+            num_ranks=8,
             attn_dp_size=8,
             attn_tp_size=1,
             ffn_tp_size=2,
@@ -240,6 +246,7 @@ def test_qwen3_moe_decoder_layer_uses_parallel_config():
         },
     )()
     parallel_config = MoEParallelConfig(
+        num_ranks=4,
         attn_dp_size=2,
         attn_tp_size=2,
         ffn_tp_size=2,

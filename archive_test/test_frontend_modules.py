@@ -3,6 +3,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from nandmachine.commands.macro import FlashAttnOp, MatMulOp, SramPrefetch, SramPrefetchRelease
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
 from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig, MoEParallelConfig
@@ -18,7 +19,11 @@ from nandmachine.frontend.modules.modules import (
 )
 
 
-def _build_attention_graph_meta(parallel_config) -> NxGraphMeta:
+def _build_attention_graph_meta(
+    parallel_config,
+    *,
+    memory_backend: str = "nand",
+) -> NxGraphMeta:
     return NxGraphMeta(
         nand_config=NandConfig(
             num_channels=1,
@@ -48,6 +53,7 @@ def _build_attention_graph_meta(parallel_config) -> NxGraphMeta:
             activation_bits=16,
             kv_cache_bits=16,
             kv_block_size_bytes=1024,
+            memory_backend=memory_backend,
             parallel_config=parallel_config,
         ),
         kv_cache_state=KVCacheState(
@@ -174,6 +180,7 @@ def test_attention_codegen_rejects_moe_dp_size_mismatch():
     )
     graph_meta = _build_attention_graph_meta(
         MoEParallelConfig(
+            num_ranks=4,
             attn_dp_size=2,
             attn_tp_size=2,
             ffn_tp_size=2,
@@ -200,6 +207,58 @@ def test_attention_codegen_rejects_tp_size_mismatch():
 
     with pytest.raises(ValueError, match="Attention tp_size must be 2, got 1"):
         module.macro_code_gen(graph_meta)
+
+
+def test_inference_config_rejects_invalid_memory_backend():
+    with pytest.raises(ValueError, match="Unsupported memory_backend=dram"):
+        InferenceConfig(
+            batch_size=2,
+            input_sequence_length=8,
+            output_sequence_length=4,
+            weight_bits=16,
+            activation_bits=16,
+            kv_cache_bits=16,
+            kv_block_size_bytes=1024,
+            memory_backend="dram",
+            parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        )
+
+
+def test_linear_codegen_uses_hbm_kernel_without_prefetch_or_release():
+    module = LinearBase(input_size=16, output_size=24, bias=False)
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        memory_backend="hbm",
+    )
+
+    macro_op_list = module.macro_code_gen(graph_meta)
+
+    assert len(macro_op_list) == 1
+    assert isinstance(macro_op_list[0], MatMulOp)
+    assert not any(isinstance(op, SramPrefetch) for op in macro_op_list)
+    assert not any(isinstance(op, SramPrefetchRelease) for op in macro_op_list)
+
+
+def test_attention_codegen_uses_hbm_kernel_without_prefetch_or_release():
+    module = Attention(
+        num_heads=4,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=2,
+        tp_size=2,
+        dp_size=1,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1),
+        memory_backend="hbm",
+    )
+
+    macro_op_list = module.macro_code_gen(graph_meta)
+
+    assert len(macro_op_list) == 1
+    assert isinstance(macro_op_list[0], FlashAttnOp)
+    assert not any(isinstance(op, SramPrefetch) for op in macro_op_list)
+    assert not any(isinstance(op, SramPrefetchRelease) for op in macro_op_list)
 
 
 def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():

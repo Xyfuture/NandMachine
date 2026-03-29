@@ -6,7 +6,7 @@ import torch.fx as fx
 
 from nandmachine.commands.macro import FlashAttnOp, MacroOp, SramPrefetch,SramPrefetchRelease
 from nandmachine.config.config import NandConfig
-from nandmachine.kernels.base import NandKernelBase
+from nandmachine.kernels.base import HBMKernelBase, NandKernelBase
 
 
 class GQANandKernel(NandKernelBase):
@@ -69,4 +69,52 @@ class GQANandKernel(NandKernelBase):
         return macro_op_list
         
 
-            
+
+class GQAHBMKernel(HBMKernelBase):
+    def __init__(self) -> None:
+        super().__init__()
+    
+
+    @classmethod
+    def lowering(
+            cls,
+            group_size:int,
+            num_kv_heads:int,
+            head_dim:int,
+            num_kv_blocks:int,
+            kv_block_size:int,
+            block_bytes:int,
+            kv_cache_bits:int,
+            input_bits:int,
+            nand_config:NandConfig
+    )->list[MacroOp]:
+        del block_bytes, input_bits, nand_config
+
+        dims = {
+            "group_size": group_size,
+            "num_kv_heads": num_kv_heads,
+            "head_dim": head_dim,
+            "num_kv_blocks": num_kv_blocks,
+            "kv_block_size": kv_block_size,
+        }
+        invalid_dims = {name: value for name, value in dims.items() if value <= 0}
+        if invalid_dims:
+            raise ValueError(f"GQAHBMKernel expects positive dims, got {invalid_dims}")
+        if kv_cache_bits <= 0 or kv_cache_bits % 8 != 0:
+            raise ValueError(
+                f"kv_cache_bits must be a positive multiple of 8, got {kv_cache_bits}"
+            )
+
+        b = num_kv_blocks * num_kv_heads
+        m = group_size
+        k = head_dim
+        n = kv_block_size
+
+        return [
+            FlashAttnOp(
+                qk_bmm_shape=(b, m, k, n),
+                sv_bmm_shape=(b, m, n, k),
+                softmax_shape=(b * m, n),
+                weight_bits=kv_cache_bits,
+            )
+        ]
