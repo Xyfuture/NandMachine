@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+from nandmachine.config.model_config import LlamaModelConfig
+from nandmachine.frontend.modules.modules import (
+    Attention,
+    MergedColumnParallelLinear,
+    QKVParallelLinear,
+    RMSNorm,
+    RotaryEmbedding,
+    RowParallelLinear,
+    SiluAndMul,
+)
+
+
+TP_SIZE = 1
+
+
+class LlamaAttention(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        num_kv_heads: int,
+        max_position: int,
+        head_dim: int | None = None,
+        attention_bias: bool = False,
+        rope_theta: float = 500000.0,
+    ) -> None:
+        super().__init__()
+        self.total_num_heads = num_heads
+        self.num_heads = num_heads
+        self.total_num_kv_heads = num_kv_heads
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim or hidden_size // self.total_num_heads
+        self.q_size = self.num_heads * self.head_dim
+        self.kv_size = self.num_kv_heads * self.head_dim
+        self.scaling = self.head_dim ** -0.5
+
+        self.qkv_proj = QKVParallelLinear(
+            hidden_size,
+            self.head_dim,
+            self.total_num_heads,
+            self.total_num_kv_heads,
+            tp_size=TP_SIZE,
+            bias=attention_bias,
+        )
+        self.o_proj = RowParallelLinear(
+            self.total_num_heads * self.head_dim,
+            hidden_size,
+            tp_size=TP_SIZE,
+            bias=attention_bias,
+        )
+        self.rotary_emb = RotaryEmbedding(
+            head_size=self.head_dim,
+            rotary_dim=self.head_dim,
+            max_position_embeddings=max_position,
+            base=rope_theta,
+        )
+        self.attn = Attention(
+            num_heads=self.num_heads,
+            head_dim=self.head_dim,
+            scale=self.scaling,
+            num_kv_heads=self.num_kv_heads,
+        )
+        self.register_buffer(
+            "_dummy_positions",
+            torch.empty(0, dtype=torch.long),
+            persistent=False,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        qkv = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.unflatten(-1, (self.num_heads, self.head_dim))
+        k = k.unflatten(-1, (self.num_kv_heads, self.head_dim))
+        v = v.unflatten(-1, (self.num_kv_heads, self.head_dim))
+
+        positions_to_use = self._dummy_positions if positions is None else positions
+        q, k = self.rotary_emb(positions_to_use, q, k)
+        output = self.attn(q, k, v)
+        output = output.flatten(-2, -1)
+        return self.o_proj(output)
+
+
+class LlamaMLP(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        hidden_act: str,
+        mlp_bias: bool = False,
+    ) -> None:
+        super().__init__()
+        if hidden_act != "silu":
+            raise ValueError(f"Unsupported hidden_act: {hidden_act}")
+
+        self.intermediate_size = intermediate_size
+        self.gate_up_proj = MergedColumnParallelLinear(
+            hidden_size,
+            intermediate_size * 2,
+            tp_size=TP_SIZE,
+            bias=mlp_bias,
+        )
+        self.act_fn = SiluAndMul(hidden_dim=intermediate_size)
+        self.down_proj = RowParallelLinear(
+            intermediate_size,
+            hidden_size,
+            tp_size=TP_SIZE,
+            bias=mlp_bias,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate_up = self.gate_up_proj(x)
+        act_input = gate_up.unsqueeze(1).repeat_interleave(
+            self.intermediate_size * 2,
+            dim=1,
+        )
+        activated = self.act_fn(act_input)[..., : self.intermediate_size]
+        return self.down_proj(activated)
+
+
+class LlamaDecoderLayer(nn.Module):
+    def __init__(self, config: LlamaModelConfig) -> None:
+        super().__init__()
+        self.self_attn = LlamaAttention(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
+            max_position=config.max_position_embeddings,
+            head_dim=config.head_dim,
+            attention_bias=config.attention_bias,
+            rope_theta=config.rope_theta,
+        )
+        self.mlp = LlamaMLP(
+            hidden_size=config.hidden_size,
+            intermediate_size=config.intermediate_size,
+            hidden_act=config.hidden_act,
+            mlp_bias=config.mlp_bias,
+        )
+        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size,
+            eps=config.rms_norm_eps,
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = self.self_attn(hidden_states)
+        hidden_states = hidden_states + residual
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = hidden_states + residual
+        return hidden_states
+
+
+__all__ = [
+    "LlamaAttention",
+    "LlamaMLP",
+    "LlamaDecoderLayer",
+]
