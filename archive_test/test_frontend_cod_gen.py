@@ -80,7 +80,7 @@ class CountingHook(HookModuleBase):
         return [
             VectorOp(
                 vector_op_type=f"{self.label}_{index}",
-                vector_shape=[graph_meta.inference_config.batch_size, index + 1],
+                vector_shape=[graph_meta.batch_size, index + 1],
             )
             for index in range(self.num_ops)
         ]
@@ -184,6 +184,37 @@ def test_codegen_pass_runs_rms_norm_hook_module():
     assert isinstance(macro_op_list[0], VectorOp)
     assert macro_op_list[0].vector_op_type == "rms_norm"
     assert macro_op_list[0].vector_shape == [2, 16]
+
+
+def test_nx_graph_meta_batch_size_override():
+    graph_meta = _build_graph_meta()
+
+    assert graph_meta.batch_size == 2
+
+    graph_meta.batch_size = 5
+
+    assert graph_meta.batch_size == 5
+    assert graph_meta.inference_config.batch_size == 2
+
+
+def test_nx_graph_meta_with_batch_size_returns_overridden_copy():
+    graph_meta = _build_graph_meta()
+
+    updated_graph_meta = graph_meta.with_batch_size(7)
+
+    assert updated_graph_meta is not graph_meta
+    assert updated_graph_meta.batch_size == 7
+    assert graph_meta.batch_size == 2
+
+
+def test_nx_graph_meta_batch_size_rejects_non_positive_values():
+    graph_meta = _build_graph_meta()
+
+    with pytest.raises(ValueError, match="batch_size must be > 0"):
+        graph_meta.batch_size = 0
+
+    with pytest.raises(ValueError, match="batch_size must be > 0"):
+        graph_meta.with_batch_size(0)
 
 
 def test_codegen_pass_handles_linear_hooks_with_small_sram_threshold():

@@ -30,9 +30,14 @@ def _resolve_dp_size(parallel_config: ParallelConfig | None) -> int:
 
 
 def _resolve_tp_size(parallel_config: ParallelConfig | None) -> int:
-    if parallel_config is None or not hasattr(parallel_config, "tp_size"):
+    if parallel_config is None:
         return 1
-    tp_size = parallel_config.tp_size
+    if hasattr(parallel_config, "tp_size"):
+        tp_size = parallel_config.tp_size
+    elif hasattr(parallel_config, "attn_tp_size"):
+        tp_size = parallel_config.attn_tp_size
+    else:
+        return 1
     if tp_size <= 0:
         raise ValueError(f"tp_size must be > 0, got {tp_size}")
     return tp_size

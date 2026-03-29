@@ -16,6 +16,7 @@ class DenseParallelConfig(ParallelConfig):
 @dataclass
 class MoEParallelConfig:
     attn_dp_size:int 
+    attn_tp_size:int
 
     ffn_tp_size:int
     ffn_ep_size:int 

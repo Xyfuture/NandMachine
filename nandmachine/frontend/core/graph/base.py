@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Iterable, Optional, Set, Type, cast
 
 import torch
@@ -45,6 +45,29 @@ class NxGraphMeta:
     inference_config:InferenceConfig 
 
     kv_cache_state:KVCacheState
+
+    _batch_size_override: int | None = None
+
+    @property
+    def batch_size(self) -> int:
+        if self._batch_size_override is not None:
+            return self._batch_size_override
+
+        batch_size = self.inference_config.batch_size
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        return batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        if value <= 0:
+            raise ValueError(f"batch_size must be > 0, got {value}")
+        self._batch_size_override = value
+
+    def with_batch_size(self, batch_size: int) -> "NxGraphMeta":
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        return replace(self, _batch_size_override=batch_size)
 
 
 

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from nandmachine.commands.macro import AllReduceOp, MacroOp, MatMulOp, VectorOp
+from nandmachine.config.inference_config import DenseParallelConfig, MoEParallelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.kernels.attention import GQANandKernel
 from nandmachine.kernels.lieanr import LinearNandKernel
@@ -57,7 +58,7 @@ class RMSNorm(HookModuleBase):
             VectorOp(
                 vector_op_type="rms_norm",
                 vector_shape=[
-                    graph_meta.inference_config.batch_size,
+                    graph_meta.batch_size,
                     self.hidden_size,
                 ],
             )
@@ -86,7 +87,7 @@ class LinearBase(HookModuleBase):
     
 
     def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
-        m = graph_meta.inference_config.batch_size
+        m = graph_meta.batch_size
         k = self.input_size
         n = self.output_size
         weight_bits = graph_meta.inference_config.weight_bits
@@ -155,7 +156,7 @@ class RowParallelLinear(LinearBase):
             raise ValueError("RowParallelLinear expected MatMulOp before AllReduceOp")
 
         output_bytes = (
-            graph_meta.inference_config.batch_size
+            graph_meta.batch_size
             * self.output_size
             * (activation_bits // 8)
         )
@@ -211,12 +212,20 @@ class Attention(HookModuleBase):
         head_dim: int,
         scale: float,
         num_kv_heads: int,
+        tp_size: int,
+        dp_size: int,
     ) -> None:
         super().__init__()
         if num_heads <= 0:
             raise ValueError(f"num_heads must be > 0, got {num_heads}")
+        if head_dim <= 0:
+            raise ValueError(f"head_dim must be > 0, got {head_dim}")
         if num_kv_heads <= 0:
             raise ValueError(f"num_kv_heads must be > 0, got {num_kv_heads}")
+        if tp_size <= 0:
+            raise ValueError(f"tp_size must be > 0, got {tp_size}")
+        if dp_size <= 0:
+            raise ValueError(f"dp_size must be > 0, got {dp_size}")
         if num_heads % num_kv_heads != 0:
             raise ValueError(
                 f"num_heads must be divisible by num_kv_heads, got {num_heads} and {num_kv_heads}"
@@ -225,6 +234,8 @@ class Attention(HookModuleBase):
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
+        self.tp_size = tp_size
+        self.dp_size = dp_size
 
 
 
@@ -266,22 +277,36 @@ class Attention(HookModuleBase):
                 f"Attention macro codegen only supports gqa, got {model_config.attention_type}"
             )
 
-        expected_tp_size = divide(model_config.num_key_value_heads, self.num_kv_heads)
-        if model_config.num_attention_heads != self.num_heads * expected_tp_size:
-            raise ValueError("Attention local heads do not match model_config tensor parallel split")
+        # expected_tp_size = divide(model_config.num_key_value_heads, self.num_kv_heads)
+        # if model_config.num_attention_heads != self.num_heads * expected_tp_size:
+        #     raise ValueError("Attention local heads do not match model_config tensor parallel split")
+        # if self.tp_size != expected_tp_size:
+        #     raise ValueError(
+        #         f"Attention tp_size must be {expected_tp_size}, got {self.tp_size}"
+        #     )
 
-        actual_tp_size = getattr(inference_config.parallel_config, "tp_size", 1)
-        if actual_tp_size != expected_tp_size:
-            raise ValueError(
-                f"inference_config.parallel_config.tp_size must be {expected_tp_size}, got {actual_tp_size}"
-            )
+        # parallel_config = inference_config.parallel_config
+        # if isinstance(parallel_config, DenseParallelConfig):
+        #     actual_dp_size = parallel_config.dp_size
+        # elif isinstance(parallel_config, MoEParallelConfig):
+        #     actual_dp_size = parallel_config.attn_dp_size
+        # else:
+        #     raise ValueError(
+        #         f"Unsupported parallel_config type for Attention: {type(parallel_config).__name__}"
+        #     )
+        # if actual_dp_size != self.dp_size:
+        #     raise ValueError(
+        #         f"Attention dp_size must be {actual_dp_size}, got {self.dp_size}"
+        #     )
+
+        
 
         group_size = divide(self.num_heads, self.num_kv_heads)
-        num_kv_heads = self.num_kv_heads
-        head_dim = self.head_dim
+        num_kv_heads = self.num_kv_heads // self.tp_size
+        head_dim = self.head_dim 
         
         # TODO Fix this 
-        num_kv_blocks:int = kv_cache_state.num_kv_blocks
+        num_kv_blocks:int = kv_cache_state.num_kv_blocks // (self.tp_size * self.dp_size)
         kv_block_size:int = kv_cache_state.kv_block_size_tokens
         block_bytes:int = inference_config.kv_block_size_bytes
 
@@ -327,7 +352,7 @@ class SiluAndMul(HookModuleBase):
         macro_op_list:list[MacroOp] = [
             VectorOp(
                 vector_op_type='silu_mul',
-                vector_shape=[graph_meta.inference_config.batch_size,self.hidden_dim]
+                vector_shape=[graph_meta.batch_size,self.hidden_dim]
             )
         ]
 

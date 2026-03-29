@@ -3,6 +3,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from nandmachine.config.cache_state import KVCacheState
+from nandmachine.config.config import NandConfig
+from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig, MoEParallelConfig
+from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.frontend.core.graph.base import NxTracer
 from nandmachine.frontend.modules.modules import (
     Attention,
@@ -12,6 +16,49 @@ from nandmachine.frontend.modules.modules import (
     RotaryEmbedding,
     RowParallelLinear,
 )
+
+
+def _build_attention_graph_meta(parallel_config) -> NxGraphMeta:
+    return NxGraphMeta(
+        nand_config=NandConfig(
+            num_channels=1,
+            num_plane=1,
+            num_block=4,
+            num_pages=16,
+            tRead=1.0,
+            tWrite=2.0,
+            tErase=3.0,
+            page_size=4,
+            sram_threshold=1024,
+        ),
+        model_config=type(
+            "MockAttentionModelConfig",
+            (),
+            {
+                "attention_type": "gqa",
+                "num_attention_heads": 8,
+                "num_key_value_heads": 4,
+            },
+        )(),
+        inference_config=InferenceConfig(
+            batch_size=2,
+            input_sequence_length=8,
+            output_sequence_length=4,
+            weight_bits=16,
+            activation_bits=16,
+            kv_cache_bits=16,
+            kv_block_size_bytes=1024,
+            parallel_config=parallel_config,
+        ),
+        kv_cache_state=KVCacheState(
+            total_kv_cache_size_per_layer=1024,
+            num_nand_pages_per_layer=8,
+            num_hyper_pages_per_layer=1,
+            kv_block_size_tokens=16,
+            num_kv_blocks=4,
+            kv_cache_num_pages_per_layer=8,
+        ),
+    )
 
 
 def test_rms_norm_forward_keeps_shape():
@@ -85,6 +132,8 @@ def test_attention_forward_matches_query_shape():
         head_dim=8,
         scale=8 ** -0.5,
         num_kv_heads=2,
+        tp_size=2,
+        dp_size=1,
     )
     q = torch.randn(6, 4, 8)
     k = torch.randn(6, 2, 8)
@@ -93,6 +142,64 @@ def test_attention_forward_matches_query_shape():
     y = module(q, k, v)
 
     assert y.shape == q.shape
+    assert module.tp_size == 2
+    assert module.dp_size == 1
+
+
+def test_attention_codegen_rejects_dense_dp_size_mismatch():
+    module = Attention(
+        num_heads=4,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=2,
+        tp_size=2,
+        dp_size=2,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1)
+    )
+
+    with pytest.raises(ValueError, match="Attention dp_size must be 1, got 2"):
+        module.macro_code_gen(graph_meta)
+
+
+def test_attention_codegen_rejects_moe_dp_size_mismatch():
+    module = Attention(
+        num_heads=4,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=2,
+        tp_size=2,
+        dp_size=1,
+    )
+    graph_meta = _build_attention_graph_meta(
+        MoEParallelConfig(
+            attn_dp_size=2,
+            attn_tp_size=2,
+            ffn_tp_size=2,
+            ffn_ep_size=2,
+        )
+    )
+
+    with pytest.raises(ValueError, match="Attention dp_size must be 2, got 1"):
+        module.macro_code_gen(graph_meta)
+
+
+def test_attention_codegen_rejects_tp_size_mismatch():
+    module = Attention(
+        num_heads=4,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=2,
+        tp_size=1,
+        dp_size=1,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1)
+    )
+
+    with pytest.raises(ValueError, match="Attention tp_size must be 2, got 1"):
+        module.macro_code_gen(graph_meta)
 
 
 def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():
@@ -113,6 +220,8 @@ def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():
                 head_dim=8,
                 scale=8 ** -0.5,
                 num_kv_heads=2,
+                tp_size=2,
+                dp_size=1,
             )
 
         def forward(

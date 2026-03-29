@@ -1,7 +1,12 @@
 import pytest
 
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig, ParallelConfig
+from nandmachine.config.inference_config import (
+    DenseParallelConfig,
+    InferenceConfig,
+    MoEParallelConfig,
+    ParallelConfig,
+)
 from nandmachine.config.model_config import Qwen3ModelConfig
 from nandmachine.frontend.utlis import calculate_kv_cache_state
 
@@ -202,6 +207,43 @@ def test_calculate_kv_cache_state_scales_down_local_kv_heads_for_tp():
             output_sequence_length=16,
             kv_cache_bits=16,
             parallel_config=DenseParallelConfig(num_ranks=4, tp_size=4, dp_size=1),
+        ),
+    )
+
+    assert state.total_kv_cache_size_per_layer == 655_360
+    assert state.num_nand_pages_per_layer == 640
+    assert state.num_hyper_pages_per_layer == 160
+    assert state.kv_block_size_tokens == 64
+    assert state.num_kv_blocks == 10
+
+
+def test_calculate_kv_cache_state_uses_attn_tp_size_for_moe_parallel_config():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+
+    state = calculate_kv_cache_state(
+        make_nand_config(page_size=1, num_plane=4),
+        model_config,
+        make_inference_config(
+            batch_size=8,
+            input_sequence_length=64,
+            output_sequence_length=16,
+            kv_cache_bits=16,
+            parallel_config=MoEParallelConfig(
+                num_ranks=4,
+                attn_dp_size=1,
+                attn_tp_size=4,
+                ffn_tp_size=2,
+                ffn_ep_size=2,
+            ),
         ),
     )
 
