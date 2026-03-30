@@ -1,18 +1,45 @@
-
-
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 
+class InsufficientGPUMemoryError(RuntimeError):
+    pass
+
+
 @dataclass
 class KVCacheState:
-    total_kv_cache_size_per_layer:int 
-    num_nand_pages_per_layer:int 
-    num_hyper_pages_per_layer:int 
+    total_kv_cache_size_per_layer: int
+    num_nand_pages_per_layer: int
+    num_hyper_pages_per_layer: int
 
-    kv_block_size_tokens:int  # 一个 block 内部有多少个 token 的 kv cache， 注意不是容量的单位，不是 bytes，是 token 的个数 
-    num_kv_blocks:int 
-    
+    kv_block_size_tokens: int
+    num_kv_blocks: int
 
-    # legacy 
-    kv_cache_num_pages_per_layer:int
+    # legacy
+    kv_cache_num_pages_per_layer: int
+
+
+@dataclass(frozen=True)
+class BatchSizeCapacityResult:
+    device_name: str
+    batch_size: int
+    num_ranks: int
+    dp_size: int
+    tp_size: int
+    per_rank_capacity_bytes: int
+    per_rank_weight_bytes: int
+    per_rank_kv_cache_bytes: int
+    per_rank_used_bytes: int
+    per_rank_remaining_bytes: int
+    total_capacity_bytes: int
+    total_weight_bytes: int
+    total_kv_cache_bytes: int
+    total_used_bytes: int
+
+
+__all__ = [
+    "KVCacheState",
+    "BatchSizeCapacityResult",
+    "InsufficientGPUMemoryError",
+]

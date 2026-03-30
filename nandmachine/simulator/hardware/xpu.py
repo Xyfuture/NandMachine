@@ -90,7 +90,6 @@ class ComputeEngine(SimModule):
         *,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
-        weight_bits: int = 16,
     ):
         super().__init__()
 
@@ -105,12 +104,6 @@ class ComputeEngine(SimModule):
             raise ValueError(f"Unsupported device_name: {device_name}")
         self.device: Device = device_dict[device_name]
         self.compile_mode = compile_mode
-        supported_weight_bits = {8, 16}
-        if weight_bits not in supported_weight_bits:
-            raise ValueError(
-                f"Unsupported weight_bits={weight_bits}, expected one of {sorted(supported_weight_bits)}"
-            )
-        self.weight_bits = weight_bits
 
         
         self.command_queue:list[DepSlot[MacroOp]] = []
@@ -192,7 +185,7 @@ class ComputeEngine(SimModule):
 
         total_elements = math.prod(macro_op.vector_shape)
         vector_flops_per_cycle = self.device.compute_module.get_total_vector_flops_per_cycle(
-            self.weight_bits
+            macro_op.weight_bits
         )
         exp_flops = self.device.compute_module.core.vector_unit.flops_per_exp
 
@@ -217,9 +210,9 @@ class ComputeEngine(SimModule):
 
     def _estimate_matmul_cycles(self, macro_op: MatMulOp) -> float:
         m, k, n = macro_op.shape
-        bytes_per_value = self._bytes_per_value(self.weight_bits)
+        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
         array = self.device.compute_module.core.systolic_array
-        mac_per_cycle = array.get_mac_per_cycle(self.weight_bits)
+        mac_per_cycle = array.get_mac_per_cycle(macro_op.weight_bits)
         systolic_flops_per_cycle = (
             array.array_height
             * array.array_width
@@ -243,9 +236,9 @@ class ComputeEngine(SimModule):
         qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
         _, _, _, sv_k = macro_op.sv_bmm_input_shape
         softmax_m, softmax_n = macro_op.softmax_input_shape
-        bytes_per_value = self._bytes_per_value(self.weight_bits)
+        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
         vector_flops_per_cycle = self.device.compute_module.get_total_vector_flops_per_cycle(
-            self.weight_bits
+            macro_op.weight_bits
         )
         exp_flops = self.device.compute_module.core.vector_unit.flops_per_exp
         io_bandwidth_per_cycle = (
@@ -253,10 +246,10 @@ class ComputeEngine(SimModule):
         )
 
         qk_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_k, qk_n), weight_bits=self.weight_bits)
+            MatMulOp(dim=(qk_b * qk_m, qk_k, qk_n), weight_bits=macro_op.weight_bits)
         )
         sv_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_n, sv_k), weight_bits=self.weight_bits)
+            MatMulOp(dim=(qk_b * qk_m, qk_n, sv_k), weight_bits=macro_op.weight_bits)
         )
 
         softmax_flops = softmax_m * softmax_n * (exp_flops + 4)
@@ -283,7 +276,7 @@ class ComputeEngine(SimModule):
             try:
                 matmul_sim = MatMul_Simulation.get_instance(
                     dim=macro_op.shape,
-                    weight_bits=self.weight_bits,
+                    weight_bits=macro_op.weight_bits,
                 )
                 matmul_cycles = matmul_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -304,7 +297,7 @@ class ComputeEngine(SimModule):
                 qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
                     dim=macro_op.qk_bmm_input_shape,
                     matmul_type="QK",
-                    weight_bits=self.weight_bits,
+                    weight_bits=macro_op.weight_bits,
                 )
                 qk_bmm_cycles = qk_bmm_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -313,7 +306,7 @@ class ComputeEngine(SimModule):
 
                 softmax_sim = Softmax_Simulation(
                     dim=macro_op.softmax_input_shape,
-                    weight_bits=self.weight_bits,
+                    weight_bits=macro_op.weight_bits,
                 )
                 softmax_cycles = softmax_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -322,7 +315,7 @@ class ComputeEngine(SimModule):
                 sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
                     dim=macro_op.sv_bmm_input_shape,
                     matmul_type="SV",
-                    weight_bits=self.weight_bits,
+                    weight_bits=macro_op.weight_bits,
                 )
                 sv_bmm_cycles = sv_bmm_sim.compile_and_simulate(
                     pcb_module=self.device,
@@ -356,7 +349,6 @@ class TransferEngine(SimModule):
         *,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
-        weight_bits: int = 16,
     ):
         super().__init__()
 
@@ -365,7 +357,6 @@ class TransferEngine(SimModule):
 
         self.device_name = device_name
         self.compile_mode = compile_mode
-        self.weight_bits = weight_bits
         self.device: Device = device_dict[device_name]
         self.transfer_command_queue:list[DepSlot[MacroOp]] = []
 
@@ -402,20 +393,17 @@ class TransferEngine(SimModule):
             device_count=macro_op.num_ranks,
         )
 
-        source_word_size = self._bytes_per_value(macro_op.weight_bits)
-        target_word_size = self._bytes_per_value(self.weight_bits)
-        if macro_op.data_size % source_word_size != 0:
+        word_size = self._bytes_per_value(macro_op.weight_bits)
+        if macro_op.data_size % word_size != 0:
             raise ValueError(
                 "AllReduceOp.data_size must be divisible by source word size. "
-                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
+                f"data_size={macro_op.data_size}, source_word_size={word_size}"
             )
-        num_values = macro_op.data_size // source_word_size
-        target_data_size = num_values * target_word_size
 
         allreduce_sim = AllReduceSimulation(
             num_gpus=macro_op.num_ranks,
-            data_size=target_data_size,
-            weight_bits=self.weight_bits,
+            data_size=macro_op.data_size,
+            weight_bits=macro_op.weight_bits,
         )
         allreduce_cycles = allreduce_sim.compile_and_simulate(
             pcb_module=self.device,
@@ -433,20 +421,17 @@ class TransferEngine(SimModule):
             device_count=macro_op.num_gpus,
         )
 
-        source_word_size = self._bytes_per_value(macro_op.weight_bits)
-        target_word_size = self._bytes_per_value(self.weight_bits)
-        if macro_op.data_size % source_word_size != 0:
+        word_size = self._bytes_per_value(macro_op.weight_bits)
+        if macro_op.data_size % word_size != 0:
             raise ValueError(
                 "All2AllOp.data_size must be divisible by source word size. "
-                f"data_size={macro_op.data_size}, source_word_size={source_word_size}"
+                f"data_size={macro_op.data_size}, source_word_size={word_size}"
             )
-        num_values = macro_op.data_size // source_word_size
-        target_data_size = num_values * target_word_size
 
         all2all_sim = AllToAllPrimitive_Simulation(
             num_gpus=macro_op.num_gpus,
-            data_size=target_data_size,
-            weight_bits=self.weight_bits,
+            data_size=macro_op.data_size,
+            weight_bits=macro_op.weight_bits,
         )
         all2all_cycles = all2all_sim.compile_and_simulate(
             pcb_module=self.device,
@@ -482,14 +467,12 @@ class xPU(SimModule):
         *,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
-        weight_bits: int = 16,
     ):
         super().__init__()
 
         self.nand_config:NandConfig = nand_config
         self.device_name = device_name
         self.compile_mode = compile_mode
-        self.weight_bits = weight_bits
 
         # 在这里初始化 nand controller
         self.nand_controller = NandController(self.nand_config)
@@ -500,12 +483,10 @@ class xPU(SimModule):
             self.nand_config,
             device_name=device_name,
             compile_mode=compile_mode,
-            weight_bits=weight_bits,
         )
         self.transfer_engine = TransferEngine(
             device_name=device_name,
             compile_mode=compile_mode,
-            weight_bits=weight_bits,
         )
         self.prefetch_engine = PerfetchEngine(self.nand_controller)
 

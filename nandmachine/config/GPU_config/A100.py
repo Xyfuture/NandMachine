@@ -14,6 +14,7 @@ from nandmachine.config.GPU_config.schema import (
 # - Unlike H100/H200 files, there is no intra-family split (such as SXM vs PCIe) here.
 
 # A100 scalar parameters
+A100_MEMORY_CAPACITY_BYTES = 80 * 1024**3
 A100_CORE_COUNT = 108
 A100_CLOCK_FREQ_HZ = 1.41e9
 A100_L2_SIZE_BYTES = 40 * 1024**2
@@ -75,10 +76,12 @@ A100_IO_MODULE = IOModule(bandwidth=A100_IO_BW_BYTES_PER_SEC)
 A100_80GB_FP16 = Device(
     compute_module=A100_COMPUTE_MODULE_FP16,
     io_module=A100_IO_MODULE,
+    memory_capacity_bytes=A100_MEMORY_CAPACITY_BYTES,
 )
 
 __all__ = [
     "A100_CORE_COUNT",
+    "A100_MEMORY_CAPACITY_BYTES",
     "A100_CLOCK_FREQ_HZ",
     "A100_L2_SIZE_BYTES",
     "A100_L2_BW_BYTES_PER_CYCLE",

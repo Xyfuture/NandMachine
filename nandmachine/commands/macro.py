@@ -115,6 +115,7 @@ class FlashAttnOp(MacroOp):
 class VectorOp(MacroOp):
     vector_op_type: str
     vector_shape: list[int]
+    weight_bits: int
 
 
 # ---------- Transfer Operationss ------------

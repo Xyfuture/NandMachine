@@ -9,6 +9,7 @@ from nandmachine.commands.macro import (
     FlashAttnOp,
     MatMulOp,
     ReduceScatterOp,
+    VectorOp,
 )
 from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import A100_80GB_FP16
@@ -187,11 +188,11 @@ def test_compute_engine_uses_cached_simulator_entrypoints(monkeypatch):
     SimSession.reset()
 
 
-def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatch):
+def test_compute_engine_uses_macro_op_weight_bits_for_all_latency_paths(monkeypatch):
     SimSession.reset()
     SimSession.init()
 
-    engine = xpu_module.ComputeEngine(make_config(), weight_bits=8)
+    engine = xpu_module.ComputeEngine(make_config())
 
     matmul_calls: list[tuple[tuple[int, int, int], int]] = []
     flash_calls: list[tuple[tuple[int, int, int, int], int, str]] = []
@@ -243,13 +244,13 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
         FakeSoftmaxSimulation,
     )
 
-    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=16))
+    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=8))
     flash_cycles = engine.execute_macro_op(
         FlashAttnOp(
             qk_bmm_shape=(2, 4, 8, 6),
             sv_bmm_shape=(2, 4, 6, 3),
             softmax_shape=(4, 6),
-            weight_bits=16,
+            weight_bits=8,
         )
     )
 
@@ -261,6 +262,23 @@ def test_compute_engine_global_weight_bits_override_all_latency_paths(monkeypatc
         ((2, 4, 6, 3), 8, "SV"),
     ]
     assert softmax_calls == [((4, 6), 8)]
+
+    SimSession.reset()
+
+
+def test_compute_engine_vector_cycles_follow_macro_op_weight_bits():
+    SimSession.reset()
+    SimSession.init()
+
+    engine = xpu_module.ComputeEngine(make_config())
+    fp16_cycles = engine.execute_macro_op(
+        VectorOp(vector_op_type="rms_norm", vector_shape=[4096, 4096], weight_bits=16)
+    )
+    fp8_cycles = engine.execute_macro_op(
+        VectorOp(vector_op_type="rms_norm", vector_shape=[4096, 4096], weight_bits=8)
+    )
+
+    assert fp16_cycles > fp8_cycles
 
     SimSession.reset()
 
@@ -281,7 +299,7 @@ def test_transfer_engine_allreduce_uses_estimate_path(monkeypatch):
     SimSession.reset()
     SimSession.init()
 
-    engine = xpu_module.TransferEngine(weight_bits=8)
+    engine = xpu_module.TransferEngine()
     allreduce_calls: list[tuple[int, int, int]] = []
 
     class FakeAllReduceSimulation:
@@ -307,7 +325,7 @@ def test_transfer_engine_allreduce_uses_estimate_path(monkeypatch):
     )
 
     assert allreduce_cycles == 66
-    assert allreduce_calls == [(4, 64, 8)]
+    assert allreduce_calls == [(4, 128, 16)]
 
     SimSession.reset()
 
@@ -316,7 +334,7 @@ def test_transfer_engine_all2all_uses_estimate_path(monkeypatch):
     SimSession.reset()
     SimSession.init()
 
-    engine = xpu_module.TransferEngine(weight_bits=8)
+    engine = xpu_module.TransferEngine()
     all2all_calls: list[tuple[int, int, int]] = []
 
     class FakeAllToAllSimulation:
@@ -342,7 +360,7 @@ def test_transfer_engine_all2all_uses_estimate_path(monkeypatch):
     )
 
     assert all2all_cycles == 77
-    assert all2all_calls == [(4, 64, 8)]
+    assert all2all_calls == [(4, 128, 16)]
 
     SimSession.reset()
 

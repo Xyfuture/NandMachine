@@ -105,6 +105,12 @@ class IOModule:
 
 
 class Device:
-    def __init__(self, compute_module: ComputeModule, io_module: IOModule) -> None:
+    def __init__(
+        self,
+        compute_module: ComputeModule,
+        io_module: IOModule,
+        memory_capacity_bytes: int,
+    ) -> None:
         self.compute_module = compute_module
         self.io_module = io_module
+        self.memory_capacity_bytes = memory_capacity_bytes

@@ -76,6 +76,7 @@ class RMSNorm(HookModuleBase):
                     graph_meta.batch_size,
                     self.hidden_size,
                 ],
+                weight_bits=graph_meta.inference_config.activation_bits,
             )
         ]
 
@@ -336,11 +337,10 @@ class Attention(HookModuleBase):
         
 
         group_size = divide(self.num_heads, self.num_kv_heads)
-        num_kv_heads = self.num_kv_heads // self.tp_size
+        num_kv_heads = self.num_kv_heads
         head_dim = self.head_dim 
         
-        # TODO Fix this 
-        num_kv_blocks:int = kv_cache_state.num_kv_blocks // (self.tp_size * self.dp_size)
+        num_kv_blocks:int = kv_cache_state.num_kv_blocks
         kv_block_size:int = kv_cache_state.kv_block_size_tokens
         block_bytes:int = inference_config.kv_block_size_bytes
 
@@ -386,7 +386,8 @@ class SiluAndMul(HookModuleBase):
         macro_op_list:list[MacroOp] = [
             VectorOp(
                 vector_op_type='silu_mul',
-                vector_shape=[graph_meta.batch_size,self.hidden_dim]
+                vector_shape=[graph_meta.batch_size,self.hidden_dim],
+                weight_bits=graph_meta.inference_config.activation_bits,
             )
         ]
 
@@ -451,6 +452,7 @@ class TopKRouter(HookModuleBase):
                     self.num_experts,
                     self.top_k,
                 ],
+                weight_bits=graph_meta.inference_config.activation_bits,
             )
         ]
 
@@ -610,6 +612,7 @@ class FusedMoE(HookModuleBase):
             VectorOp(
                 vector_op_type="moe_weighted_sum",
                 vector_shape=[graph_meta.batch_size, self.hidden_size],
+                weight_bits=graph_meta.inference_config.activation_bits,
             ).with_inputs(macro_op_list[-1])
         )
 

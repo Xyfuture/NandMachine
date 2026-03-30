@@ -13,7 +13,6 @@ def run_macro_ops(
     *,
     device_name: str = "A100_80GB",
     compile_mode: str = "heuristic-GPU",
-    weight_bits: int = 16,
 ) -> int:
     SimSession.reset()
     SimSession.init()
@@ -22,7 +21,6 @@ def run_macro_ops(
         nand_config,
         device_name=device_name,
         compile_mode=compile_mode,
-        weight_bits=weight_bits,
     )
     xpu.load_command(commands)
     SimSession.scheduler.run()

@@ -82,6 +82,7 @@ class CountingHook(HookModuleBase):
             VectorOp(
                 vector_op_type=f"{self.label}_{index}",
                 vector_shape=[graph_meta.batch_size, index + 1],
+                weight_bits=graph_meta.inference_config.activation_bits,
             )
             for index in range(self.num_ops)
         ]
@@ -103,7 +104,7 @@ class InvalidContainerHook(HookModuleBase):
     def macro_code_gen(self, graph_meta: NxGraphMeta):
         del graph_meta
         return (
-            VectorOp(vector_op_type="tuple_op", vector_shape=[1, 1]),
+            VectorOp(vector_op_type="tuple_op", vector_shape=[1, 1], weight_bits=16),
         )
 
 

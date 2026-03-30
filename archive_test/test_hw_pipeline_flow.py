@@ -77,10 +77,10 @@ def test_xpu_routes_transfer_ops_to_transfer_engine():
 def test_hw_pipeline_flow_runs_with_current_macro_ops():
     config = make_config()
 
-    vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16])
+    vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)
     prefetch_linear = SramPrefetch(num_prefetch_pages=4).with_inputs(vector_norm)
     matmul = MatMulOp(dim=(2, 16, 8), weight_bits=16).with_inputs(prefetch_linear)
-    vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8]).with_inputs(
+    vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8], weight_bits=16).with_inputs(
         matmul
     )
     prefetch_attn = SramPrefetch(num_prefetch_pages=2).with_inputs(vector_act)
@@ -111,9 +111,9 @@ def test_hw_pipeline_flow_runs_with_current_macro_ops():
 def test_hw_pipeline_flow_runs_without_prefetch_or_release():
     config = make_config()
 
-    vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16])
+    vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)
     matmul = MatMulOp(dim=(2, 16, 8), weight_bits=16).with_inputs(vector_norm)
-    vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8]).with_inputs(
+    vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8], weight_bits=16).with_inputs(
         matmul
     )
     flash_attn = FlashAttnOp(
