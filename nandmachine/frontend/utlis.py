@@ -18,6 +18,7 @@ from nandmachine.config.inference_config import (
 from nandmachine.config.model_config import (
     LlamaModelConfig,
     ModelConfigBase,
+    Qwen3MoEModelConfig,
     Qwen3ModelConfig,
 )
 
@@ -42,6 +43,15 @@ class _DenseModelWeightSpec:
     gate_up_output_size: int
     down_proj_input_size: int
     replicated_norm_params_per_layer: int
+
+
+@dataclass(frozen=True)
+class _MoEParallelism:
+    num_ranks: int
+    dp_size: int
+    tp_size: int
+    ffn_ep_size: int
+    ffn_tp_size: int
 
 
 def _ceil_div(numerator: int, denominator: int) -> int:
@@ -167,6 +177,69 @@ def _require_dense_model_config(model_config: ModelConfigBase) -> Qwen3ModelConf
     )
 
 
+def _resolve_moe_parallelism(parallel_config: ParallelConfig | None) -> _MoEParallelism:
+    if not isinstance(parallel_config, MoEParallelConfig):
+        raise ValueError("Qwen3MoE GPU capacity calculator requires MoEParallelConfig")
+
+    if parallel_config.num_ranks <= 0:
+        raise ValueError(f"num_ranks must be positive, got {parallel_config.num_ranks}")
+    if parallel_config.attn_dp_size <= 0:
+        raise ValueError(f"attn_dp_size must be positive, got {parallel_config.attn_dp_size}")
+    if parallel_config.attn_tp_size <= 0:
+        raise ValueError(f"attn_tp_size must be positive, got {parallel_config.attn_tp_size}")
+    if parallel_config.ffn_ep_size <= 0:
+        raise ValueError(f"ffn_ep_size must be positive, got {parallel_config.ffn_ep_size}")
+    if parallel_config.ffn_tp_size <= 0:
+        raise ValueError(f"ffn_tp_size must be positive, got {parallel_config.ffn_tp_size}")
+
+    attn_world_size = parallel_config.attn_dp_size * parallel_config.attn_tp_size
+    ffn_world_size = parallel_config.ffn_ep_size * parallel_config.ffn_tp_size
+    if parallel_config.num_ranks != attn_world_size or parallel_config.num_ranks != ffn_world_size:
+        raise ValueError(
+            "MoE parallel config must satisfy "
+            "num_ranks == attn_dp_size * attn_tp_size == ffn_ep_size * ffn_tp_size, "
+            f"got num_ranks={parallel_config.num_ranks}, "
+            f"attn_dp_size={parallel_config.attn_dp_size}, "
+            f"attn_tp_size={parallel_config.attn_tp_size}, "
+            f"ffn_ep_size={parallel_config.ffn_ep_size}, "
+            f"ffn_tp_size={parallel_config.ffn_tp_size}"
+        )
+
+    return _MoEParallelism(
+        num_ranks=parallel_config.num_ranks,
+        dp_size=parallel_config.attn_dp_size,
+        tp_size=parallel_config.attn_tp_size,
+        ffn_ep_size=parallel_config.ffn_ep_size,
+        ffn_tp_size=parallel_config.ffn_tp_size,
+    )
+
+
+def _require_supported_qwen3_moe_capacity_model(
+    model_config: ModelConfigBase,
+) -> Qwen3MoEModelConfig:
+    if not isinstance(model_config, Qwen3MoEModelConfig):
+        raise NotImplementedError(
+            "MoE GPU capacity calculator only supports Qwen3MoEModelConfig"
+        )
+    if model_config.ffn_type != "moe":
+        raise ValueError(f"Unsupported ffn_type for Qwen3MoE: {model_config.ffn_type}")
+    if model_config.attention_type.lower() != "gqa":
+        raise NotImplementedError(
+            "Qwen3MoE GPU capacity calculator only supports attention_type == 'gqa'"
+        )
+    if model_config.shared_expert_intermediate_size is not None:
+        raise NotImplementedError("shared expert is not implemented")
+    if model_config.decoder_sparse_step != 1:
+        raise NotImplementedError(
+            "Qwen3MoE GPU capacity calculator only supports decoder_sparse_step == 1"
+        )
+    if model_config.mlp_only_layers:
+        raise NotImplementedError(
+            "Qwen3MoE GPU capacity calculator only supports empty mlp_only_layers"
+        )
+    return model_config
+
+
 def _resolve_weight_spec(
     model_config: Qwen3ModelConfig | LlamaModelConfig,
 ) -> _DenseModelWeightSpec:
@@ -257,6 +330,74 @@ def _calculate_per_rank_weight_bytes(
     )
 
 
+def _calculate_per_rank_qwen3_moe_weight_bytes(
+    model_config: Qwen3MoEModelConfig,
+    inference_config: InferenceConfig,
+    parallelism: _MoEParallelism,
+) -> int:
+    _require_divisible(
+        model_config.num_attention_heads,
+        parallelism.tp_size,
+        "num_attention_heads",
+    )
+    _require_divisible(
+        model_config.num_key_value_heads,
+        parallelism.tp_size,
+        "num_key_value_heads",
+    )
+    head_dim = model_config.head_dim or (
+        model_config.hidden_size // model_config.num_attention_heads
+    )
+    attention_qkv_output_size = (
+        model_config.num_attention_heads + 2 * model_config.num_key_value_heads
+    ) * head_dim
+    attention_o_proj_input_size = model_config.num_attention_heads * head_dim
+
+    attention_qkv_output_per_rank = _require_divisible(
+        attention_qkv_output_size,
+        parallelism.tp_size,
+        "attention_qkv_output_size",
+    )
+    attention_o_proj_input_per_rank = _require_divisible(
+        attention_o_proj_input_size,
+        parallelism.tp_size,
+        "attention_o_proj_input_size",
+    )
+    local_expert_count = _require_divisible(
+        model_config.num_experts,
+        parallelism.ffn_ep_size,
+        "num_experts",
+    )
+    local_moe_intermediate_size = _require_divisible(
+        model_config.moe_intermediate_size,
+        parallelism.ffn_tp_size,
+        "moe_intermediate_size",
+    )
+
+    replicated_norm_params_per_layer = model_config.hidden_size * 2
+    if not model_config.attention_bias:
+        replicated_norm_params_per_layer += head_dim * 2
+
+    router_param_count_per_layer = model_config.hidden_size * model_config.num_experts
+    per_local_expert_param_count = (
+        model_config.hidden_size * (local_moe_intermediate_size * 2)
+        + model_config.hidden_size * local_moe_intermediate_size
+    )
+
+    weight_param_count_per_layer = (
+        model_config.hidden_size * attention_qkv_output_per_rank
+        + model_config.hidden_size * attention_o_proj_input_per_rank
+        + replicated_norm_params_per_layer
+        + router_param_count_per_layer
+        + local_expert_count * per_local_expert_param_count
+    )
+
+    return _bits_to_bytes(
+        weight_param_count_per_layer * model_config.num_hidden_layers,
+        inference_config.weight_bits,
+    )
+
+
 def _calculate_per_rank_full_model_kv_cache_bytes(
     model_config: Qwen3ModelConfig | LlamaModelConfig,
     inference_config: InferenceConfig,
@@ -298,10 +439,49 @@ def _calculate_per_rank_full_model_kv_cache_bytes(
     )
 
 
+def _calculate_per_rank_qwen3_moe_full_model_kv_cache_bytes(
+    model_config: Qwen3MoEModelConfig,
+    inference_config: InferenceConfig,
+    parallelism: _MoEParallelism,
+) -> int:
+    if inference_config.batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {inference_config.batch_size}")
+    if inference_config.input_sequence_length < 0:
+        raise ValueError(
+            f"input_sequence_length must be non-negative, got {inference_config.input_sequence_length}"
+        )
+    if inference_config.output_sequence_length < 0:
+        raise ValueError(
+            f"output_sequence_length must be non-negative, got {inference_config.output_sequence_length}"
+        )
+
+    layout = _resolve_attention_layout(
+        model_config,
+        inference_config.parallel_config,
+    )
+    rank_batch = _ceil_div(inference_config.batch_size, parallelism.dp_size)
+    peak_sequence_length = (
+        inference_config.input_sequence_length + inference_config.output_sequence_length
+    )
+
+    per_layer_value_count = (
+        rank_batch
+        * peak_sequence_length
+        * layout.num_kv_heads
+        * layout.head_dim
+        * 2
+    )
+
+    return _bits_to_bytes(
+        per_layer_value_count * model_config.num_hidden_layers,
+        inference_config.kv_cache_bits,
+    )
+
+
 def _build_capacity_result(
     device_name: str,
     inference_config: InferenceConfig,
-    parallelism: _DenseParallelism,
+    parallelism: _DenseParallelism | _MoEParallelism,
     per_rank_weight_bytes: int,
     per_rank_kv_cache_bytes: int,
 ) -> BatchSizeCapacityResult:
@@ -320,6 +500,8 @@ def _build_capacity_result(
         num_ranks=parallelism.num_ranks,
         dp_size=parallelism.dp_size,
         tp_size=parallelism.tp_size,
+        ffn_ep_size=getattr(parallelism, "ffn_ep_size", None),
+        ffn_tp_size=getattr(parallelism, "ffn_tp_size", None),
         per_rank_capacity_bytes=per_rank_capacity_bytes,
         per_rank_weight_bytes=per_rank_weight_bytes,
         per_rank_kv_cache_bytes=per_rank_kv_cache_bytes,
@@ -417,22 +599,40 @@ def validate_batch_size_or_raise(
     model_config: ModelConfigBase,
     inference_config: InferenceConfig,
 ) -> BatchSizeCapacityResult:
-    dense_model_config = _require_dense_model_config(model_config)
-    parallelism = _resolve_dense_parallelism(inference_config.parallel_config)
-
     if inference_config.batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {inference_config.batch_size}")
 
-    per_rank_weight_bytes = _calculate_per_rank_weight_bytes(
-        dense_model_config,
-        inference_config,
-        parallelism,
-    )
-    per_rank_kv_cache_bytes = _calculate_per_rank_full_model_kv_cache_bytes(
-        dense_model_config,
-        inference_config,
-        parallelism,
-    )
+    if isinstance(model_config, (Qwen3ModelConfig, LlamaModelConfig)):
+        dense_model_config = _require_dense_model_config(model_config)
+        parallelism = _resolve_dense_parallelism(inference_config.parallel_config)
+        per_rank_weight_bytes = _calculate_per_rank_weight_bytes(
+            dense_model_config,
+            inference_config,
+            parallelism,
+        )
+        per_rank_kv_cache_bytes = _calculate_per_rank_full_model_kv_cache_bytes(
+            dense_model_config,
+            inference_config,
+            parallelism,
+        )
+    elif isinstance(model_config, Qwen3MoEModelConfig):
+        moe_model_config = _require_supported_qwen3_moe_capacity_model(model_config)
+        parallelism = _resolve_moe_parallelism(inference_config.parallel_config)
+        per_rank_weight_bytes = _calculate_per_rank_qwen3_moe_weight_bytes(
+            moe_model_config,
+            inference_config,
+            parallelism,
+        )
+        per_rank_kv_cache_bytes = _calculate_per_rank_qwen3_moe_full_model_kv_cache_bytes(
+            moe_model_config,
+            inference_config,
+            parallelism,
+        )
+    else:
+        raise NotImplementedError(
+            "GPU capacity calculator only supports dense Qwen3/Llama and Qwen3MoE"
+        )
+
     result = _build_capacity_result(
         device_name,
         inference_config,
@@ -457,9 +657,6 @@ def calculate_max_batch_size(
     model_config: ModelConfigBase,
     inference_config: InferenceConfig,
 ) -> BatchSizeCapacityResult:
-    dense_model_config = _require_dense_model_config(model_config)
-    _resolve_dense_parallelism(inference_config.parallel_config)
-
     if (
         inference_config.input_sequence_length + inference_config.output_sequence_length
         <= 0
@@ -472,7 +669,7 @@ def calculate_max_batch_size(
         candidate_config = replace(inference_config, batch_size=batch_size)
         return validate_batch_size_or_raise(
             device_name=device_name,
-            model_config=dense_model_config,
+            model_config=model_config,
             inference_config=candidate_config,
         )
 

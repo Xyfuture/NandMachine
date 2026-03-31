@@ -7,7 +7,7 @@ from nandmachine.commands.macro import All2AllOp, MatMulOp, VectorOp
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
 from nandmachine.config.inference_config import InferenceConfig, MoEParallelConfig
-from nandmachine.config.model_config import ModelConfigBase
+from nandmachine.config.model_config import ModelConfigBase, Qwen3MoEModelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.frontend.modules.modules import FusedMoE
 from nandmachine.frontend.network.qwen3_moe import (
@@ -195,31 +195,18 @@ def test_fused_moe_codegen_uses_ffn_tp_size_for_expert_ops():
     assert any(op.dim == (3, 16, 16) for op in matmul_ops)
 
 
-def test_fused_moe_codegen_rejects_invalid_ffn_world_size():
-    graph_meta = _build_graph_meta(
-        batch_size=5,
-        parallel_config=MoEParallelConfig(
+def test_moe_parallel_config_rejects_invalid_world_size():
+    with pytest.raises(
+        ValueError,
+        match="num_ranks == attn_dp_size \\* attn_tp_size == ffn_ep_size \\* ffn_tp_size",
+    ):
+        MoEParallelConfig(
             num_ranks=8,
             attn_dp_size=8,
             attn_tp_size=1,
             ffn_tp_size=2,
             ffn_ep_size=2,
-        ),
-    )
-    module = FusedMoE(
-        hidden_size=16,
-        intermediate_size=32,
-        num_experts=4,
-        top_k=2,
-        ffn_ep_size=2,
-        ffn_tp_size=2,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="ffn_ep_size \\* ffn_tp_size must equal attn_dp_size \\* attn_tp_size",
-    ):
-        module.macro_code_gen(graph_meta)
+        )
 
 
 def test_qwen3_moe_decoder_layer_uses_parallel_config():
@@ -233,9 +220,13 @@ def test_qwen3_moe_decoder_layer_uses_parallel_config():
             "num_attention_heads": 8,
             "num_key_value_heads": 4,
             "max_position_embeddings": 128,
+            "intermediate_size": 96,
             "moe_intermediate_size": 32,
             "num_experts": 8,
             "num_experts_per_tok": 2,
+            "num_hidden_layers": 12,
+            "decoder_sparse_step": 1,
+            "mlp_only_layers": [],
             "hidden_act": "silu",
             "ffn_type": "moe",
             "head_dim": 8,
@@ -261,3 +252,40 @@ def test_qwen3_moe_decoder_layer_uses_parallel_config():
     assert layer.self_attn.attn.tp_size == 2
     assert layer.self_attn.attn.dp_size == 2
     assert layer.mlp.ffn_tp_size == 2
+
+
+def test_qwen3_moe_model_config_from_config_reads_full_model_fields():
+    config = type(
+        "MockQwen3MoeConfig",
+        (),
+        {
+            "model_type": "qwen3_moe",
+            "architectures": ["Qwen3MoeForCausalLM"],
+            "hidden_size": 4096,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 4,
+            "max_position_embeddings": 40960,
+            "intermediate_size": 12288,
+            "moe_intermediate_size": 1536,
+            "num_experts": 128,
+            "num_experts_per_tok": 8,
+            "num_hidden_layers": 94,
+            "decoder_sparse_step": 1,
+            "mlp_only_layers": [],
+            "hidden_act": "silu",
+            "ffn_type": "moe",
+            "head_dim": 128,
+            "rms_norm_eps": 1e-6,
+            "attention_bias": False,
+            "rope_theta": 1_000_000.0,
+            "shared_expert_intermediate_size": None,
+        },
+    )()
+
+    model_config = Qwen3MoEModelConfig.from_config(config)
+
+    assert model_config.intermediate_size == 12288
+    assert model_config.moe_intermediate_size == 1536
+    assert model_config.num_hidden_layers == 94
+    assert model_config.decoder_sparse_step == 1
+    assert model_config.mlp_only_layers == []

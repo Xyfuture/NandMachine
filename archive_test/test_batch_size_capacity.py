@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from nandmachine.config.cache_state import InsufficientGPUMemoryError
@@ -7,8 +10,15 @@ from nandmachine.config.inference_config import (
     MoEParallelConfig,
     ParallelConfig,
 )
-from nandmachine.config.model_config import LlamaModelConfig, Qwen3ModelConfig
+from nandmachine.config.model_config import (
+    LlamaModelConfig,
+    Qwen3MoEModelConfig,
+    Qwen3ModelConfig,
+)
 from nandmachine.frontend.utlis import calculate_max_batch_size, validate_batch_size_or_raise
+
+
+MODEL_CARD_DIR = Path(__file__).resolve().parents[1] / "model_cards"
 
 
 def _make_inference_config(
@@ -35,6 +45,48 @@ def _make_inference_config(
 
 def _a100_capacity_bytes() -> int:
     return 80 * 1024**3
+
+
+def _make_qwen3_moe_model_config(**overrides) -> Qwen3MoEModelConfig:
+    config = Qwen3MoEModelConfig(
+        hidden_size=1024,
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        max_position_embeddings=4096,
+        intermediate_size=2048,
+        moe_intermediate_size=256,
+        num_experts=4,
+        num_experts_per_tok=2,
+        num_hidden_layers=2,
+        decoder_sparse_step=1,
+        mlp_only_layers=[],
+        hidden_act="silu",
+        ffn_type="moe",
+        head_dim=128,
+        rms_norm_eps=1e-6,
+        attention_bias=False,
+        rope_theta=10000.0,
+        shared_expert_intermediate_size=None,
+    )
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
+def _load_qwen3_8b_model_config() -> Qwen3ModelConfig:
+    return Qwen3ModelConfig.from_dict(
+        json.loads((MODEL_CARD_DIR / "qwen3-8B.json").read_text())
+    )
+
+
+def _load_qwen3_moe_235b_model_config() -> Qwen3MoEModelConfig:
+    return Qwen3MoEModelConfig.from_config(
+        type(
+            "Qwen3Moe235BConfig",
+            (),
+            json.loads((MODEL_CARD_DIR / "qwen3-moe-235B.json").read_text()),
+        )()
+    )
 
 
 def test_validate_batch_size_qwen3_single_rank_counts_qk_norm_weights():
@@ -399,6 +451,218 @@ def test_validate_batch_size_rejects_moe_parallel_config():
 
     with pytest.raises(NotImplementedError, match="MoEParallelConfig"):
         validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+
+def test_validate_batch_size_qwen3_moe_single_rank_counts_router_and_expert_weights():
+    model_config = _make_qwen3_moe_model_config()
+    inference_config = _make_inference_config(
+        4,
+        parallel_config=MoEParallelConfig(
+            num_ranks=1,
+            attn_dp_size=1,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=1,
+        ),
+    )
+
+    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+    per_layer_weight_params = (
+        1024 * ((8 + 2 * 2) * 128)
+        + 1024 * (8 * 128)
+        + (2 * 1024 + 2 * 128)
+        + 1024 * 4
+        + 4 * (1024 * (256 * 2) + 1024 * 256)
+    )
+    expected_per_rank_weight_bytes = per_layer_weight_params * 2 * 2
+    per_layer_kv_values = 4 * (8 + 4) * 2 * 128 * 2
+    expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
+
+    assert result.dp_size == 1
+    assert result.tp_size == 1
+    assert result.ffn_ep_size == 1
+    assert result.ffn_tp_size == 1
+    assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
+    assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
+
+
+def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts():
+    model_config = _make_qwen3_moe_model_config()
+    inference_config = _make_inference_config(
+        9,
+        parallel_config=MoEParallelConfig(
+            num_ranks=4,
+            attn_dp_size=2,
+            attn_tp_size=2,
+            ffn_tp_size=2,
+            ffn_ep_size=2,
+        ),
+    )
+
+    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+    per_layer_weight_params = (
+        1024 * (((8 + 2 * 2) * 128) // 2)
+        + 1024 * ((8 * 128) // 2)
+        + (2 * 1024 + 2 * 128)
+        + 1024 * 4
+        + (4 // 2) * (1024 * ((256 * 2) // 2) + 1024 * (256 // 2))
+    )
+    expected_per_rank_weight_bytes = per_layer_weight_params * 2 * 2
+    expected_rank_batch = (9 + 2 - 1) // 2
+    expected_local_kv_heads = 2 // 2
+    per_layer_kv_values = (
+        expected_rank_batch * (8 + 4) * expected_local_kv_heads * 128 * 2
+    )
+    expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
+
+    assert result.num_ranks == 4
+    assert result.dp_size == 2
+    assert result.tp_size == 2
+    assert result.ffn_ep_size == 2
+    assert result.ffn_tp_size == 2
+    assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
+    assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
+    assert result.total_weight_bytes == expected_per_rank_weight_bytes * 4
+    assert result.total_kv_cache_bytes == expected_per_rank_kv_bytes * 4
+
+
+def test_calculate_max_batch_size_returns_exact_qwen3_moe_limit():
+    model_config = _make_qwen3_moe_model_config(
+        hidden_size=2048,
+        num_attention_heads=16,
+        num_key_value_heads=4,
+        max_position_embeddings=40960,
+        intermediate_size=4096,
+        moe_intermediate_size=512,
+        num_experts=8,
+        num_experts_per_tok=2,
+        num_hidden_layers=24,
+    )
+    inference_config = _make_inference_config(
+        999,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=MoEParallelConfig(
+            num_ranks=1,
+            attn_dp_size=1,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=1,
+        ),
+    )
+
+    result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+
+    per_layer_weight_params = (
+        2048 * ((16 + 2 * 4) * 128)
+        + 2048 * (16 * 128)
+        + (2 * 2048 + 2 * 128)
+        + 2048 * 8
+        + 8 * (2048 * (512 * 2) + 2048 * 512)
+    )
+    expected_per_rank_weight_bytes = per_layer_weight_params * 24 * 2
+    per_batch_per_layer_kv_values = (2048 + 512) * 4 * 128 * 2
+    per_batch_full_model_kv_bytes = per_batch_per_layer_kv_values * 24 * 2
+    expected_max_batch_size = (
+        _a100_capacity_bytes() - expected_per_rank_weight_bytes
+    ) // per_batch_full_model_kv_bytes
+
+    assert result.batch_size == expected_max_batch_size
+    assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
+    assert result.per_rank_used_bytes <= result.per_rank_capacity_bytes
+
+
+def test_validate_batch_size_rejects_qwen3_moe_shared_expert():
+    model_config = _make_qwen3_moe_model_config(shared_expert_intermediate_size=128)
+    inference_config = _make_inference_config(
+        2,
+        parallel_config=MoEParallelConfig(
+            num_ranks=1,
+            attn_dp_size=1,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=1,
+        ),
+    )
+
+    with pytest.raises(NotImplementedError, match="shared expert"):
+        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+
+def test_validate_batch_size_rejects_qwen3_moe_sparse_step_not_one():
+    model_config = _make_qwen3_moe_model_config(decoder_sparse_step=2)
+    inference_config = _make_inference_config(
+        2,
+        parallel_config=MoEParallelConfig(
+            num_ranks=1,
+            attn_dp_size=1,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=1,
+        ),
+    )
+
+    with pytest.raises(NotImplementedError, match="decoder_sparse_step == 1"):
+        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+
+def test_validate_batch_size_rejects_qwen3_moe_mlp_only_layers():
+    model_config = _make_qwen3_moe_model_config(mlp_only_layers=[0])
+    inference_config = _make_inference_config(
+        2,
+        parallel_config=MoEParallelConfig(
+            num_ranks=1,
+            attn_dp_size=1,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=1,
+        ),
+    )
+
+    with pytest.raises(NotImplementedError, match="empty mlp_only_layers"):
+        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+
+
+def test_qwen3_8b_model_card_capacity_matches_expected_scale():
+    model_config = _load_qwen3_8b_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    max_result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+
+    assert result.per_rank_weight_bytes == 13_892_143_104
+    assert result.per_rank_kv_cache_bytes == 377_487_360
+    assert max_result.batch_size == 190
+
+
+def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
+    model_config = _load_qwen3_moe_235b_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=MoEParallelConfig(
+            num_ranks=128,
+            attn_dp_size=32,
+            attn_tp_size=4,
+            ffn_tp_size=4,
+            ffn_ep_size=32,
+        ),
+    )
+
+    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    max_result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+
+    assert result.per_rank_weight_bytes == 6_999_784_448
+    assert result.per_rank_kv_cache_bytes == 123_207_680
+    assert max_result.batch_size == 20_480
 
 
 def test_validate_batch_size_rejects_mla_attention_type():

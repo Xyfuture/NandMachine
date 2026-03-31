@@ -36,6 +36,8 @@ class BatchSizeCapacityResult:
     total_weight_bytes: int
     total_kv_cache_bytes: int
     total_used_bytes: int
+    ffn_ep_size: int | None = None
+    ffn_tp_size: int | None = None
 
 
 __all__ = [

@@ -63,9 +63,13 @@ class Qwen3MoEModelConfig(ModelConfigBase):
     num_attention_heads: int
     num_key_value_heads: int
     max_position_embeddings: int
+    intermediate_size: int
     moe_intermediate_size: int
     num_experts: int
     num_experts_per_tok: int
+    num_hidden_layers: int
+    decoder_sparse_step: int
+    mlp_only_layers: list[int]
     hidden_act: str
     ffn_type: str
     head_dim: int | None = None
@@ -89,9 +93,13 @@ class Qwen3MoEModelConfig(ModelConfigBase):
         if hidden_act != "silu":
             raise ValueError(f"Unsupported hidden_act: {hidden_act}")
 
+        intermediate_size = _require_config_attr(config, "intermediate_size")
         moe_intermediate_size = _require_config_attr(config, "moe_intermediate_size")
         num_experts = _require_config_attr(config, "num_experts")
         num_experts_per_tok = _require_config_attr(config, "num_experts_per_tok")
+        num_hidden_layers = _require_config_attr(config, "num_hidden_layers")
+        decoder_sparse_step = _require_config_attr(config, "decoder_sparse_step")
+        mlp_only_layers = _require_config_attr(config, "mlp_only_layers")
 
         ffn_type = _get_optional_config_attr(config, "ffn_type", "moe")
         if ffn_type != "moe":
@@ -105,6 +113,8 @@ class Qwen3MoEModelConfig(ModelConfigBase):
         if shared_expert_intermediate_size is not None:
             raise NotImplementedError("shared expert is not implemented")
 
+        if intermediate_size <= 0:
+            raise ValueError("intermediate_size must be > 0")
         if moe_intermediate_size <= 0:
             raise ValueError("moe_intermediate_size must be > 0")
         if num_experts <= 0:
@@ -113,6 +123,24 @@ class Qwen3MoEModelConfig(ModelConfigBase):
             raise ValueError("num_experts_per_tok must be > 0")
         if num_experts_per_tok > num_experts:
             raise ValueError("num_experts_per_tok must be <= num_experts")
+        if num_hidden_layers <= 0:
+            raise ValueError("num_hidden_layers must be > 0")
+        if decoder_sparse_step <= 0:
+            raise ValueError("decoder_sparse_step must be > 0")
+        if not isinstance(mlp_only_layers, list):
+            raise TypeError("mlp_only_layers must be a list")
+        seen_mlp_only_layers: set[int] = set()
+        for layer_idx in mlp_only_layers:
+            if not isinstance(layer_idx, int):
+                raise TypeError("mlp_only_layers entries must be ints")
+            if layer_idx in seen_mlp_only_layers:
+                raise ValueError("mlp_only_layers must not contain duplicates")
+            seen_mlp_only_layers.add(layer_idx)
+            if layer_idx < 0 or layer_idx >= num_hidden_layers:
+                raise ValueError(
+                    "mlp_only_layers entries must be within [0, num_hidden_layers), "
+                    f"got {layer_idx} for num_hidden_layers={num_hidden_layers}"
+                )
 
         return cls(
             hidden_size=_require_config_attr(config, "hidden_size"),
@@ -122,9 +150,13 @@ class Qwen3MoEModelConfig(ModelConfigBase):
                 config,
                 "max_position_embeddings",
             ),
+            intermediate_size=intermediate_size,
             moe_intermediate_size=moe_intermediate_size,
             num_experts=num_experts,
             num_experts_per_tok=num_experts_per_tok,
+            num_hidden_layers=num_hidden_layers,
+            decoder_sparse_step=decoder_sparse_step,
+            mlp_only_layers=list(mlp_only_layers),
             hidden_act=hidden_act,
             ffn_type=ffn_type,
             head_dim=_require_config_attr(config, "head_dim"),
