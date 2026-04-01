@@ -42,6 +42,10 @@ def test_qwen3_attention_keeps_hidden_shape():
     assert y.shape == x.shape
     assert module.attn.tp_size == 1
     assert module.attn.dp_size == 1
+    assert module.attn.num_heads == config.num_attention_heads
+    assert module.attn.num_kv_heads == config.num_key_value_heads
+    assert module.attn.local_num_heads == config.num_attention_heads
+    assert module.attn.local_num_kv_heads == config.num_key_value_heads
 
 
 def test_qwen3_attention_adds_qk_norm_without_bias():
@@ -106,8 +110,16 @@ def test_qwen3_decoder_layer_matches_tp2_local_shapes():
     y = layer(x)
 
     assert y.shape == x.shape
-    assert layer.self_attn.num_heads == config.num_attention_heads // tp_size
-    assert layer.self_attn.num_kv_heads == config.num_key_value_heads // tp_size
+    assert layer.self_attn.num_heads == config.num_attention_heads
+    assert layer.self_attn.num_kv_heads == config.num_key_value_heads
+    assert layer.self_attn.qkv_proj.num_heads == config.num_attention_heads // tp_size
+    assert layer.self_attn.qkv_proj.num_kv_heads == config.num_key_value_heads // tp_size
+    assert layer.self_attn.attn.num_heads == config.num_attention_heads
+    assert layer.self_attn.attn.num_kv_heads == config.num_key_value_heads
+    assert layer.self_attn.attn.local_num_heads == config.num_attention_heads // tp_size
+    assert layer.self_attn.attn.local_num_kv_heads == (
+        config.num_key_value_heads // tp_size
+    )
     assert layer.self_attn.attn.tp_size == tp_size
     assert layer.self_attn.attn.dp_size == 1
     assert layer.self_attn.qkv_proj.weight.shape == (

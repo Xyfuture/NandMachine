@@ -551,69 +551,76 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             l2_tile_N = self.computational_graph.N
             l2_tile_K = self.computational_graph.K
 
-            is_l2_double_buffering = True
-            for l1_tile_M in [l2_tile_M, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
-                if l1_tile_M > l2_tile_M * 2:
-                    continue
-                for l1_tile_N in [
-                    l1_tile_M // 2,
-                    l1_tile_M,
-                    l1_tile_M * 2,
-                    l1_tile_M * 8,
-                    l1_tile_M * 16,
-                    l1_tile_M * 64,
-                    l1_tile_M * 128,
-                    l1_tile_M * 256,
-                ]:
-                    if l1_tile_N > l2_tile_N:
+            working_set_size = (
+                l2_tile_N * l2_tile_K
+                + l2_tile_M * l2_tile_K
+                + l2_tile_M * l2_tile_N
+            )
+            if (
+                working_set_size
+                <= pcb_module.compute_module.l2_size
+                // self.word_size
+                // 2
+            ):
+                is_l2_double_buffering = True
+                for l1_tile_M in [l2_tile_M, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+                    if l1_tile_M > l2_tile_M * 2:
                         continue
-                    if l1_tile_N <= 0:
-                        continue
-                    l1_tile_K_max = (
-                        pcb_module.compute_module.core.SRAM_size
-                        // self.word_size
-                        // 2
-                        - l1_tile_M * l1_tile_N
-                    ) // (l1_tile_M + l1_tile_N)
-                    if l1_tile_K_max < 1:
-                        continue
-                    l1_tile_K = min(l1_tile_K_max, l2_tile_K)
-                    l1_tile_K = floor(log2(l1_tile_K))
-                    l1_tile_K = 2**l1_tile_K
+                    for l1_tile_N in [
+                        l1_tile_M // 2,
+                        l1_tile_M,
+                        l1_tile_M * 2,
+                        l1_tile_M * 8,
+                        l1_tile_M * 16,
+                        l1_tile_M * 64,
+                        l1_tile_M * 128,
+                        l1_tile_M * 256,
+                    ]:
+                        if l1_tile_N > l2_tile_N:
+                            continue
+                        if l1_tile_N <= 0:
+                            continue
+                        l1_tile_K_max = (
+                            pcb_module.compute_module.core.SRAM_size
+                            // self.word_size
+                            // 2
+                            - l1_tile_M * l1_tile_N
+                        ) // (l1_tile_M + l1_tile_N)
+                        if l1_tile_K_max < 1:
+                            continue
+                        l1_tile_K = min(l1_tile_K_max, l2_tile_K)
+                        l1_tile_K = floor(log2(l1_tile_K))
+                        l1_tile_K = 2**l1_tile_K
 
-                    l2_loop_order = "knm"
-                    l1_loop_order = "knm"
-                    for (
-                        l0_M_tiling_factor,
-                        l0_N_tiling_factor,
-                        l0_K_tiling_factor,
-                    ) in [(1, 1, 1)]:
-                        mapping = self.Mapping(
-                            l2_tile_M,
-                            l2_tile_N,
-                            l2_tile_K,
-                            is_l2_double_buffering,
-                            l1_tile_M,
-                            l1_tile_N,
-                            l1_tile_K,
-                            l2_loop_order,
-                            l1_loop_order,
+                        l2_loop_order = "knm"
+                        l1_loop_order = "knm"
+                        for (
                             l0_M_tiling_factor,
                             l0_N_tiling_factor,
                             l0_K_tiling_factor,
-                        )
-                        # mapping.display()
-                        # start=time.time()
-                        cycle_count = self.simulate(
-                            self.computational_graph,
-                            mapping,
-                            pcb_module,
-                        )
-                        # end=time.time()
-                        # print(f'simulation time: {end-start}')
-                        if cycle_count < min_cycle_count:
-                            min_cycle_count = cycle_count
-                            best_mapping = mapping
+                        ) in [(1, 1, 1)]:
+                            mapping = self.Mapping(
+                                l2_tile_M,
+                                l2_tile_N,
+                                l2_tile_K,
+                                is_l2_double_buffering,
+                                l1_tile_M,
+                                l1_tile_N,
+                                l1_tile_K,
+                                l2_loop_order,
+                                l1_loop_order,
+                                l0_M_tiling_factor,
+                                l0_N_tiling_factor,
+                                l0_K_tiling_factor,
+                            )
+                            cycle_count = self.simulate(
+                                self.computational_graph,
+                                mapping,
+                                pcb_module,
+                            )
+                            if cycle_count < min_cycle_count:
+                                min_cycle_count = cycle_count
+                                best_mapping = mapping
         else:
             raise ValueError(f"compile_mode {compile_mode} not supported")
         # 记录全局最优结果

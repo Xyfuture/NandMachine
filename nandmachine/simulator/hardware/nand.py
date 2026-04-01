@@ -1,4 +1,5 @@
 from collections import deque
+import math
 from typing import Optional
 
 from Desim.Core import SimModule, Event, SimTime
@@ -73,7 +74,7 @@ class NandSimCoreSimple:
     def handle_request(self, access_num_pages:int, arrive_time: float) -> float:
         
         # plane level 并行 
-        latency = (access_num_pages/self.nand_config.num_plane) * self.nand_config.tRead
+        latency = math.ceil(access_num_pages/self.nand_config.num_plane) * self.nand_config.tRead
         finish_time = latency + arrive_time
         return finish_time
 

@@ -1,0 +1,5 @@
+- batch size 默认都是全局的
+- tp/dp/ep 要传导到最终的 HookModule 中，由这个来决定各种信息
+- 其他的只能是组合 HookModule
+    - qwen3 decoder layer 这种的， 基于 HookModule 构建计算图
+- 

@@ -193,6 +193,10 @@ class ComputeEngine(SimModule):
             total_flops = total_elements * 8
         elif macro_op.vector_op_type == "silu_mul":
             total_flops = total_elements * (exp_flops + 6)
+        elif macro_op.vector_op_type == "moe_topk_router":
+            total_flops = total_elements * (exp_flops + 8)
+        elif macro_op.vector_op_type == "moe_weighted_sum":
+            total_flops = total_elements * 4
         else:
             raise TypeError(
                 f"Unsupported vector op type: {macro_op.vector_op_type}"
@@ -327,6 +331,7 @@ class ComputeEngine(SimModule):
                 return self._estimate_flashattn_cycles(macro_op)
 
             if self._is_invalid_cycle_count(flashattnop_cycles):
+                assert False
                 return self._estimate_flashattn_cycles(macro_op)
             return flashattnop_cycles
 

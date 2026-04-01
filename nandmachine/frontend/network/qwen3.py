@@ -41,26 +41,22 @@ class Qwen3Attention(nn.Module):
             )
 
         self.tp_size = tp_size
-        self.total_num_heads = num_heads
-        self.num_heads = num_heads // tp_size
-        self.total_num_kv_heads = num_kv_heads
-        self.num_kv_heads = num_kv_heads // tp_size
-        self.head_dim = head_dim or hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim or hidden_size // self.num_heads
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
+            self.num_heads,
+            self.num_kv_heads,
             tp_size=tp_size,
             bias=qkv_bias,
         )
         self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
+            self.num_heads * self.head_dim,
             hidden_size,
             tp_size=tp_size,
             bias=False,
@@ -93,11 +89,16 @@ class Qwen3Attention(nn.Module):
         hidden_states: torch.Tensor,
         positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        local_num_heads = self.qkv_proj.num_heads
+        local_num_kv_heads = self.qkv_proj.num_kv_heads
+        q_size = local_num_heads * self.head_dim
+        kv_size = local_num_kv_heads * self.head_dim
+
         qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
-        q = q.unflatten(-1, (self.num_heads, self.head_dim))
-        k = k.unflatten(-1, (self.num_kv_heads, self.head_dim))
-        v = v.unflatten(-1, (self.num_kv_heads, self.head_dim))
+        q, k, v = qkv.split((q_size, kv_size, kv_size), dim=-1)
+        q = q.unflatten(-1, (local_num_heads, self.head_dim))
+        k = k.unflatten(-1, (local_num_kv_heads, self.head_dim))
+        v = v.unflatten(-1, (local_num_kv_heads, self.head_dim))
 
         if not self.qkv_bias:
             q = self.q_norm(q)

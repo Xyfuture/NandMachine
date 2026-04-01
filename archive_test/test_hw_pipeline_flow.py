@@ -134,3 +134,43 @@ def test_hw_pipeline_flow_runs_without_prefetch_or_release():
     )
 
     assert final_cycle > 0
+
+
+def test_h100_heuristic_gpu_runs_large_output_matmul_without_asserting():
+    config = make_config()
+
+    final_cycle = run_macro_ops(
+        config,
+        [MatMulOp(dim=(2, 4096, 9216), weight_bits=16)],
+        device_name="H100_SXM",
+        compile_mode="heuristic-GPU",
+    )
+
+    assert final_cycle > 0
+
+
+def test_hw_pipeline_flow_runs_with_moe_vector_ops_on_h100():
+    config = make_config()
+
+    router = VectorOp(
+        vector_op_type="moe_topk_router",
+        vector_shape=[2, 8, 2],
+        weight_bits=16,
+    )
+    dispatch = All2AllOp(num_gpus=4, data_size=128, weight_bits=16).with_inputs(router)
+    expert = MatMulOp(dim=(2, 16, 32), weight_bits=16).with_inputs(dispatch)
+    combine = All2AllOp(num_gpus=4, data_size=128, weight_bits=16).with_inputs(expert)
+    weighted_sum = VectorOp(
+        vector_op_type="moe_weighted_sum",
+        vector_shape=[2, 16],
+        weight_bits=16,
+    ).with_inputs(combine)
+
+    final_cycle = run_macro_ops(
+        config,
+        [router, dispatch, expert, combine, weighted_sum],
+        device_name="H100_SXM",
+        compile_mode="heuristic-GPU",
+    )
+
+    assert final_cycle > 0

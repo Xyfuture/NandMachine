@@ -42,7 +42,8 @@ class CodeGenPass(GraphPass):
                 node.name,
                 len(validated_ops),
             )
-
+            node.meta['marco_op_list'] = validated_ops
+ 
         graph_meta_dict[self.MACRO_OP_LIST_META_KEY] = macro_op_list
         return graph
 

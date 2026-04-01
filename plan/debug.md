@@ -1,0 +1,1 @@
+请你单独写一个 ipynb file ，仿照 llama_pipeline.ipynb ，但是 code gen pass 跑完之后我们要遍历每个 node， 拿到 node 的 macro op list 而不是全局的，针对每个 node 的 macro op list，我们单独跑模拟器，输出 node 的信息， macro op 的信息 和 模拟的时间

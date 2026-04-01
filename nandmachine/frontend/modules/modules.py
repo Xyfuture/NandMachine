@@ -261,12 +261,24 @@ class Attention(HookModuleBase):
             raise ValueError(
                 f"num_heads must be divisible by num_kv_heads, got {num_heads} and {num_kv_heads}"
             )
+        if num_heads % tp_size != 0:
+            raise ValueError(
+                f"num_heads must be divisible by tp_size, got {num_heads} and {tp_size}"
+            )
+        if num_kv_heads % tp_size != 0:
+            raise ValueError(
+                f"num_kv_heads must be divisible by tp_size, got {num_kv_heads} and {tp_size}"
+            )
+        
+
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.tp_size = tp_size
         self.dp_size = dp_size
+        self.local_num_heads = divide(num_heads, tp_size)
+        self.local_num_kv_heads = divide(num_kv_heads, tp_size)
 
 
 
@@ -276,7 +288,7 @@ class Attention(HookModuleBase):
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        del k, v
+        # del k, v
         return q.new_zeros(q.shape)
 
     def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
@@ -312,10 +324,20 @@ class Attention(HookModuleBase):
                 f"Attention macro codegen only supports gqa, got {model_config.attention_type}"
             )
 
-        expected_tp_size = divide(model_config.num_key_value_heads, self.num_kv_heads)
-        if model_config.num_attention_heads != self.num_heads * expected_tp_size:
-            raise ValueError("Attention local heads do not match model_config tensor parallel split")
-        if self.tp_size != expected_tp_size:
+        if model_config.num_attention_heads != self.num_heads:
+            raise ValueError(
+                "Attention global num_heads do not match model_config"
+            )
+        if model_config.num_key_value_heads != self.num_kv_heads:
+            raise ValueError(
+                "Attention global num_kv_heads do not match model_config"
+            )
+        expected_tp_size = divide(model_config.num_attention_heads, self.local_num_heads)
+        expected_kv_tp_size = divide(
+            model_config.num_key_value_heads,
+            self.local_num_kv_heads,
+        )
+        if self.tp_size != expected_tp_size or self.tp_size != expected_kv_tp_size:
             raise ValueError(
                 f"Attention tp_size must be {expected_tp_size}, got {self.tp_size}"
             )
@@ -336,11 +358,14 @@ class Attention(HookModuleBase):
 
         
 
-        group_size = divide(self.num_heads, self.num_kv_heads)
-        num_kv_heads = self.num_kv_heads
+        group_size = divide(self.local_num_heads, self.local_num_kv_heads)
+        num_kv_heads = self.local_num_kv_heads
         head_dim = self.head_dim 
         
-        num_kv_blocks:int = kv_cache_state.num_kv_blocks
+
+        # 因为并行的原因，需要拆分 
+        num_kv_blocks:int = kv_cache_state.num_kv_blocks // (self.dp_size*self.tp_size)
+        
         kv_block_size:int = kv_cache_state.kv_block_size_tokens
         block_bytes:int = inference_config.kv_block_size_bytes
 

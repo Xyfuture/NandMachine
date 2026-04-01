@@ -42,10 +42,10 @@ class Qwen3MoEAttention(Qwen3Attention):
         )
         self.dp_size = dp_size
         self.attn = Attention(
-            num_heads=self.num_heads,
+            num_heads=num_heads,
             head_dim=self.head_dim,
             scale=self.scaling,
-            num_kv_heads=self.num_kv_heads,
+            num_kv_heads=num_kv_heads,
             tp_size=tp_size,
             dp_size=dp_size,
         )
