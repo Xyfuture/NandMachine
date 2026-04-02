@@ -32,6 +32,18 @@ from nandmachine.simulator.software.matmul import MatMul_Simulation
 TRANSFER_OP_TYPES = (AllReduceOp, AllGatherOp, ReduceScatterOp, All2AllOp)
 
 
+def _cycle_count_to_time_ns(cycle_count: float, device: Device) -> int:
+    if not math.isfinite(cycle_count) or cycle_count <= 0:
+        raise ValueError(f"cycle_count must be finite and > 0, got {cycle_count}")
+    return max(1, math.ceil(cycle_count * 1e9 / device.compute_module.clock_freq))
+
+
+def _normalize_time_ns(time_ns: float, name: str) -> int:
+    if not math.isfinite(time_ns) or time_ns <= 0:
+        raise ValueError(f"{name} must be finite and > 0, got {time_ns}")
+    return max(1, math.ceil(time_ns))
+
+
 class PerfetchEngine(SimModule):
     def __init__(self,nand_controller:NandController):
         super().__init__()
@@ -119,9 +131,9 @@ class ComputeEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
             
-            cycles = self.execute_macro_op(macro_op_slot.payload)
-            execute_cycles = max(1, math.ceil(cycles))
-            SimModule.wait_time(SimTime(execute_cycles))
+            execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
+            wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
+            SimModule.wait_time(SimTime(wait_time_ns))
             macro_op_slot.finish_event.notify(SimTime(1))
             SimModule.wait(macro_op_slot.finish_event)
             macro_op_slot.is_finished = True
@@ -264,79 +276,61 @@ class ComputeEngine(SimModule):
 
         return qk_cycles + softmax_cycles + sv_cycles
 
-    def _is_invalid_cycle_count(self, cycles: float) -> bool:
-        return not math.isfinite(cycles) or cycles <= 0 or cycles >= 2**63 - 1
-
     def execute_macro_op(self,macro_op:MacroOp)->float:
         
-        """
-        TODO yalong
-
-        完善各个算子的时间，返回一个最终的延迟
-
-        """
 
         if isinstance(macro_op, MatMulOp):
-            try:
-                matmul_sim = MatMul_Simulation.get_instance(
-                    dim=macro_op.shape,
-                    weight_bits=macro_op.weight_bits,
-                )
-                matmul_cycles = matmul_sim.compile_and_simulate(
-                    pcb_module=self.device,
-                    compile_mode=self.compile_mode,
-                )
-            except Exception:
-                assert False
-                return self._estimate_matmul_cycles(macro_op)
-
-            if self._is_invalid_cycle_count(matmul_cycles):
-                return self._estimate_matmul_cycles(macro_op)
-            return matmul_cycles
+            matmul_sim = MatMul_Simulation.get_instance(
+                dim=macro_op.shape,
+                weight_bits=macro_op.weight_bits,
+            )
+            matmul_time_ns = matmul_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+                return_unit="time_ns",
+            )
+            return _normalize_time_ns(matmul_time_ns, "matmul_time_ns")
 
         if isinstance(macro_op, FlashAttnOp):
             self._validate_flashattn_shapes(macro_op)
 
-            try:
-                qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
-                    dim=macro_op.qk_bmm_input_shape,
-                    matmul_type="QK",
-                    weight_bits=macro_op.weight_bits,
-                )
-                qk_bmm_cycles = qk_bmm_sim.compile_and_simulate(
-                    pcb_module=self.device,
-                    compile_mode=self.compile_mode,
-                )
+            qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
+                dim=macro_op.qk_bmm_input_shape,
+                matmul_type="QK",
+                weight_bits=macro_op.weight_bits,
+            )
+            qk_bmm_time_ns = qk_bmm_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+                return_unit="time_ns",
+            )
 
-                softmax_sim = Softmax_Simulation(
-                    dim=macro_op.softmax_input_shape,
-                    weight_bits=macro_op.weight_bits,
-                )
-                softmax_cycles = softmax_sim.compile_and_simulate(
-                    pcb_module=self.device,
-                    compile_mode=self.compile_mode,
-                )
-                sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
-                    dim=macro_op.sv_bmm_input_shape,
-                    matmul_type="SV",
-                    weight_bits=macro_op.weight_bits,
-                )
-                sv_bmm_cycles = sv_bmm_sim.compile_and_simulate(
-                    pcb_module=self.device,
-                    compile_mode=self.compile_mode,
-                )
-                flashattnop_cycles = qk_bmm_cycles + softmax_cycles + sv_bmm_cycles
-            except Exception:
-                assert False
-                return self._estimate_flashattn_cycles(macro_op)
-
-            if self._is_invalid_cycle_count(flashattnop_cycles):
-                assert False
-                return self._estimate_flashattn_cycles(macro_op)
-            return flashattnop_cycles
+            softmax_sim = Softmax_Simulation(
+                dim=macro_op.softmax_input_shape,
+                weight_bits=macro_op.weight_bits,
+            )
+            softmax_time_ns = softmax_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+                return_unit="time_ns",
+            )
+            sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
+                dim=macro_op.sv_bmm_input_shape,
+                matmul_type="SV",
+                weight_bits=macro_op.weight_bits,
+            )
+            sv_bmm_time_ns = sv_bmm_sim.compile_and_simulate(
+                pcb_module=self.device,
+                compile_mode=self.compile_mode,
+                return_unit="time_ns",
+            )
+            flashattn_time_ns = qk_bmm_time_ns + softmax_time_ns + sv_bmm_time_ns
+            return _normalize_time_ns(flashattn_time_ns, "flashattn_time_ns")
 
         if isinstance(macro_op, VectorOp):
-            return self._estimate_vector_cycles(macro_op)
+            vector_cycles = self._estimate_vector_cycles(macro_op)
+            vector_time_ns = _cycle_count_to_time_ns(vector_cycles, self.device)
+            return vector_time_ns
 
         raise TypeError(f"Unsupported macro op type: {type(macro_op).__name__}")
 
@@ -374,9 +368,9 @@ class TransferEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
 
-            cycles = self.execute_macro_op(macro_op_slot.payload)
-            execute_cycles = max(1, math.ceil(cycles))
-            SimModule.wait_time(SimTime(execute_cycles))
+            execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
+            wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
+            SimModule.wait_time(SimTime(wait_time_ns))
             macro_op_slot.finish_event.notify(SimTime(1))
             SimModule.wait(macro_op_slot.finish_event)
             macro_op_slot.is_finished = True
@@ -389,9 +383,9 @@ class TransferEngine(SimModule):
             )
         return weight_bits // 8
 
-    def _estimate_allreduce_cycles(self, macro_op: AllReduceOp) -> float:
+    def _estimate_allreduce_time_ns(self, macro_op: AllReduceOp) -> int:
         if macro_op.num_ranks == 1 or macro_op.data_size == 0:
-            return 1.0
+            return 1
 
         interconnect = get_interconnect_for_device_or_raise(
             device_name=self.device_name,
@@ -410,16 +404,17 @@ class TransferEngine(SimModule):
             data_size=macro_op.data_size,
             weight_bits=macro_op.weight_bits,
         )
-        allreduce_cycles = allreduce_sim.compile_and_simulate(
+        allreduce_time_ns = allreduce_sim.compile_and_simulate(
             pcb_module=self.device,
             interconnect_module=interconnect,
             compile_mode=self.compile_mode,
+            return_unit="time_ns",
         )
-        return max(1.0, float(allreduce_cycles))
+        return _normalize_time_ns(allreduce_time_ns, "allreduce_time_ns")
 
-    def _estimate_all2all_cycles(self, macro_op: All2AllOp) -> float:
+    def _estimate_all2all_time_ns(self, macro_op: All2AllOp) -> int:
         if macro_op.num_gpus == 1 or macro_op.data_size == 0:
-            return 1.0
+            return 1
 
         interconnect = get_interconnect_for_device_or_raise(
             device_name=self.device_name,
@@ -438,20 +433,21 @@ class TransferEngine(SimModule):
             data_size=macro_op.data_size,
             weight_bits=macro_op.weight_bits,
         )
-        all2all_cycles = all2all_sim.compile_and_simulate(
+        all2all_time_ns = all2all_sim.compile_and_simulate(
             pcb_module=self.device,
             interconnect_module=interconnect,
             compile_mode=self.compile_mode,
+            return_unit="time_ns",
         )
-        return max(1.0, float(all2all_cycles))
+        return _normalize_time_ns(all2all_time_ns, "all2all_time_ns")
 
     def execute_macro_op(self,macro_op:MacroOp)->float:
-        # 使用 llm compass 的模拟器，实现 基础通信的原语的 时间仿真，返回一个 cycle 数
+        # 使用 llm compass 的模拟器，实现基础通信原语的时间仿真，返回 ns
         if isinstance(macro_op, AllReduceOp):
-            return self._estimate_allreduce_cycles(macro_op)
+            return self._estimate_allreduce_time_ns(macro_op)
 
         if isinstance(macro_op, All2AllOp):
-            return self._estimate_all2all_cycles(macro_op)
+            return self._estimate_all2all_time_ns(macro_op)
 
         if isinstance(macro_op, TRANSFER_OP_TYPES):
             return 1.0
