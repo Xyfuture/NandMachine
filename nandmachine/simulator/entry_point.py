@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from math import ceil
+
 from Desim import SimSession
 
 from nandmachine.commands.macro import MacroOp
 from nandmachine.config.config import NandConfig
+from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.simulator.hardware.xpu import xPU
+
+
+@dataclass(frozen=True)
+class MacroSimResult:
+    cycle: int
+    time_ns: int
 
 
 def run_macro_ops(
@@ -13,7 +23,7 @@ def run_macro_ops(
     *,
     device_name: str = "A100_80GB",
     compile_mode: str = "heuristic-GPU",
-) -> int:
+) -> MacroSimResult:
     SimSession.reset()
     SimSession.init()
 
@@ -25,7 +35,10 @@ def run_macro_ops(
     xpu.load_command(commands)
     SimSession.scheduler.run()
 
-    return int(SimSession.sim_time.cycle)
+    final_cycle = int(SimSession.sim_time.cycle)
+    device = get_device_or_raise(device_name)
+    final_time_ns = ceil(final_cycle * 1e9 / device.compute_module.clock_freq)
+    return MacroSimResult(cycle=final_cycle, time_ns=final_time_ns)
 
 
-__all__ = ["run_macro_ops"]
+__all__ = ["MacroSimResult", "run_macro_ops"]

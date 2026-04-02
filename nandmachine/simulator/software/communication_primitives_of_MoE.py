@@ -4,7 +4,7 @@ from nandmachine.config.interconnect_config import (
     TopologyType,
 )
 from nandmachine.config.hardware_config import Device
-from typing import Dict
+from typing import Dict, Literal
 from math import ceil
 
 
@@ -35,6 +35,12 @@ ALL2ALL_PRIMITIVE_DEFAULT_PARAMS: Dict[str, float] = {
     ],
 }
 
+ReturnUnit = Literal["cycle", "time_ns"]
+
+
+def _cycle_count_to_time_ns(cycle_count: int, pcb_module: Device) -> int:
+    return ceil(cycle_count * 1e9 / pcb_module.compute_module.clock_freq)
+
 
 class CommunicationPrimitive:
     def __init__(self, weight_bits: int = 16) -> None:
@@ -42,6 +48,7 @@ class CommunicationPrimitive:
         self.word_size = _word_size_from_weight_bits(weight_bits)
         # simulation results
         self.latency = None
+        self.time_ns = None
 
 
 class AllToAll_Simulation(CommunicationPrimitive):
@@ -405,6 +412,7 @@ class AllToAllPrimitive_Simulation(CommunicationPrimitive):
         pcb_module: Device,
         interconnect_module: InterConnectModule,
         compile_mode: str = "heuristic-GPU",
+        return_unit: ReturnUnit = "cycle",
     ) -> int:
         supported_compile_modes = {
             "exhaustive",
@@ -417,7 +425,12 @@ class AllToAllPrimitive_Simulation(CommunicationPrimitive):
             )
         latency_sec = self.simulate(interconnect_module)
         self.cycle_count = ceil(latency_sec * pcb_module.compute_module.clock_freq)
-        return self.cycle_count
+        self.time_ns = _cycle_count_to_time_ns(self.cycle_count, pcb_module)
+        if return_unit == "cycle":
+            return self.cycle_count
+        if return_unit == "time_ns":
+            return self.time_ns
+        raise ValueError(f"Unsupported return_unit: {return_unit}")
 
 
 class Broadcast:

@@ -1,3 +1,7 @@
+import json
+import math
+from pathlib import Path
+
 from Desim import SimSession
 
 from nandmachine.commands.macro import (
@@ -9,7 +13,8 @@ from nandmachine.commands.macro import (
     VectorOp,
 )
 from nandmachine.config.config import NandConfig
-from nandmachine.simulator.entry_point import run_macro_ops
+from nandmachine.config.hardware_config import get_device_or_raise
+from nandmachine.simulator.entry_point import MacroSimResult, run_macro_ops
 from nandmachine.simulator.hardware.xpu import xPU
 
 
@@ -92,7 +97,7 @@ def test_hw_pipeline_flow_runs_with_current_macro_ops():
     ).with_inputs(prefetch_attn)
     release = SramPrefetchRelease().with_inputs(flash_attn)
 
-    final_cycle = run_macro_ops(
+    result = run_macro_ops(
         config,
         [
             vector_norm,
@@ -105,7 +110,8 @@ def test_hw_pipeline_flow_runs_with_current_macro_ops():
         ],
     )
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
 
 
 def test_hw_pipeline_flow_runs_without_prefetch_or_release():
@@ -123,7 +129,7 @@ def test_hw_pipeline_flow_runs_without_prefetch_or_release():
         weight_bits=16,
     ).with_inputs(vector_act)
 
-    final_cycle = run_macro_ops(
+    result = run_macro_ops(
         config,
         [
             vector_norm,
@@ -133,20 +139,22 @@ def test_hw_pipeline_flow_runs_without_prefetch_or_release():
         ],
     )
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
 
 
 def test_h100_heuristic_gpu_runs_large_output_matmul_without_asserting():
     config = make_config()
 
-    final_cycle = run_macro_ops(
+    result = run_macro_ops(
         config,
         [MatMulOp(dim=(2, 4096, 9216), weight_bits=16)],
         device_name="H100_SXM",
         compile_mode="heuristic-GPU",
     )
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
 
 
 def test_hw_pipeline_flow_runs_with_moe_vector_ops_on_h100():
@@ -166,11 +174,77 @@ def test_hw_pipeline_flow_runs_with_moe_vector_ops_on_h100():
         weight_bits=16,
     ).with_inputs(combine)
 
-    final_cycle = run_macro_ops(
+    result = run_macro_ops(
         config,
         [router, dispatch, expert, combine, weighted_sum],
         device_name="H100_SXM",
         compile_mode="heuristic-GPU",
     )
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
+
+
+def test_run_macro_ops_returns_cycle_and_time_ns_for_a100():
+    config = make_config()
+
+    result = run_macro_ops(
+        config,
+        [VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)],
+        device_name="A100_80GB",
+        compile_mode="heuristic-GPU",
+    )
+
+    device = get_device_or_raise("A100_80GB")
+
+    assert isinstance(result, MacroSimResult)
+    assert result.cycle == int(SimSession.sim_time.cycle)
+    assert result.time_ns == math.ceil(
+        result.cycle * 1e9 / device.compute_module.clock_freq
+    )
+
+
+def test_run_macro_ops_returns_cycle_and_time_ns_for_h100():
+    config = make_config()
+
+    result = run_macro_ops(
+        config,
+        [VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)],
+        device_name="H100_SXM",
+        compile_mode="heuristic-GPU",
+    )
+
+    device = get_device_or_raise("H100_SXM")
+
+    assert isinstance(result, MacroSimResult)
+    assert result.cycle == int(SimSession.sim_time.cycle)
+    assert result.time_ns == math.ceil(
+        result.cycle * 1e9 / device.compute_module.clock_freq
+    )
+
+
+def test_notebook_entrypoints_use_macro_sim_result_and_drop_weight_bits():
+    repo_root = Path(__file__).resolve().parents[1]
+    notebook_paths = [
+        repo_root / "frontend_pipeline.ipynb",
+        repo_root / "llama_pipeline.ipynb",
+        repo_root / "qwen3_moe_pipeline.ipynb",
+    ]
+
+    for notebook_path in notebook_paths:
+        notebook = json.loads(notebook_path.read_text())
+        simulator_config_cells = []
+        run_cells = []
+        for cell in notebook["cells"]:
+            source = "".join(cell.get("source", []))
+            if "simulator_config = {" in source:
+                simulator_config_cells.append(source)
+            if "run_macro_ops(" in source:
+                run_cells.append(source)
+
+        assert simulator_config_cells
+        assert run_cells
+        assert all("\"weight_bits\"" not in cell for cell in simulator_config_cells)
+        assert all("sim_result = run_macro_ops(" in cell for cell in run_cells)
+        assert all("assert sim_result.cycle > 0" in cell for cell in run_cells)
+        assert all("sim_result.time_ns" in cell for cell in run_cells)

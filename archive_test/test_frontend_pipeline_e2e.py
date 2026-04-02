@@ -130,10 +130,7 @@ def _generate_macro_ops(
     )
 
     with torch.device("meta"):
-        if model_cls is Qwen3DecoderLayer:
-            model = model_cls(model_config, tp_size=1)
-        else:
-            model = model_cls(model_config)
+        model = model_cls(model_config, tp_size=1)
         graph = NxTracer().trace(model)
         graph_module = GraphModule(model, graph)
 
@@ -182,9 +179,10 @@ def test_frontend_pipeline_macro_ops_run_on_xpu_simulator():
         inference_config,
         Qwen3DecoderLayer,
     )
-    final_cycle = run_macro_ops(nand_config, macro_op_list)
+    result = run_macro_ops(nand_config, macro_op_list)
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
     assert any(isinstance(op, VectorOp) for op in macro_op_list)
     assert any(isinstance(op, MatMulOp) for op in macro_op_list)
     assert any(isinstance(op, FlashAttnOp) for op in macro_op_list)
@@ -220,9 +218,10 @@ def test_frontend_pipeline_llama_macro_ops_run_on_xpu_simulator():
         inference_config,
         LlamaDecoderLayer,
     )
-    final_cycle = run_macro_ops(nand_config, macro_op_list)
+    result = run_macro_ops(nand_config, macro_op_list)
 
-    assert final_cycle > 0
+    assert result.cycle > 0
+    assert result.time_ns > 0
     assert any(isinstance(op, VectorOp) for op in macro_op_list)
     assert any(isinstance(op, MatMulOp) for op in macro_op_list)
     assert any(isinstance(op, FlashAttnOp) for op in macro_op_list)

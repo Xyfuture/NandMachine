@@ -1,3 +1,5 @@
+import math
+
 from Desim import SimModule, SimSession, SimTime
 
 import nandmachine.simulator.hardware.xpu as xpu_module
@@ -16,6 +18,7 @@ from nandmachine.config.hardware_config import A100_80GB_FP16
 from nandmachine.simulator.hardware.utils import DepSlot
 from nandmachine.simulator.software.flash_attention import (
     FlashAttn_BatchedMatMul_Simulation,
+    Softmax_Simulation,
 )
 from nandmachine.simulator.software.matmul import MatMul_Simulation
 
@@ -110,6 +113,81 @@ def test_flashattn_compile_and_simulate_uses_cached_result():
     assert instance.best_cycle_count == first_cycles
     assert cache_info.misses == 1
     assert cache_info.hits == 1
+
+
+def test_matmul_compile_and_simulate_supports_time_ns_and_rehydrates_fields():
+    MatMul_Simulation.clear_caches()
+    instance = MatMul_Simulation.get_instance(dim=(9, 1, 11), weight_bits=16)
+
+    cycles = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode="heuristic-GPU",
+    )
+    time_ns = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode="heuristic-GPU",
+        return_unit="time_ns",
+    )
+    expected_time_ns = math.ceil(
+        cycles * 1e9 / A100_80GB_FP16.compute_module.clock_freq
+    )
+    cache_info = MatMul_Simulation.compile_and_simulate.cache_info()
+
+    assert time_ns == expected_time_ns
+    assert instance.best_cycle_count == cycles
+    assert instance.best_time_ns == expected_time_ns
+    assert cache_info.misses == 1
+    assert cache_info.hits == 1
+
+
+def test_flashattn_compile_and_simulate_supports_time_ns_and_rehydrates_fields():
+    FlashAttn_BatchedMatMul_Simulation.clear_caches()
+    instance = FlashAttn_BatchedMatMul_Simulation.get_instance(
+        dim=(2, 1, 8, 4),
+        weight_bits=16,
+        matmul_type="QK",
+    )
+
+    cycles = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode="heuristic-GPU",
+    )
+    time_ns = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode="heuristic-GPU",
+        return_unit="time_ns",
+    )
+    expected_time_ns = math.ceil(
+        cycles * 1e9 / A100_80GB_FP16.compute_module.clock_freq
+    )
+    cache_info = FlashAttn_BatchedMatMul_Simulation.compile_and_simulate.cache_info()
+
+    assert time_ns == expected_time_ns
+    assert instance.best_cycle_count == cycles
+    assert instance.best_time_ns == expected_time_ns
+    assert cache_info.misses == 1
+    assert cache_info.hits == 1
+
+
+def test_softmax_compile_and_simulate_supports_time_ns():
+    instance = Softmax_Simulation(dim=(4, 6), weight_bits=16)
+
+    cycles = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode=None,
+    )
+    time_ns = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        compile_mode=None,
+        return_unit="time_ns",
+    )
+    expected_time_ns = math.ceil(
+        cycles * 1e9 / A100_80GB_FP16.compute_module.clock_freq
+    )
+
+    assert time_ns == expected_time_ns
+    assert instance.best_cycle_count == cycles
+    assert instance.best_time_ns == expected_time_ns
 
 
 def test_compute_engine_uses_cached_simulator_entrypoints(monkeypatch):
