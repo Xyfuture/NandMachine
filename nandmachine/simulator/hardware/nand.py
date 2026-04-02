@@ -54,10 +54,16 @@ class NandController(SimModule):
                 access_num_pages  = cur_slot.payload
 
 
-                finish_time = self.nand_sim_core_simple.handle_request(access_num_pages,SimSession.sim_time.cycle)
+                current_time_ns = SimSession.sim_time.cycle
+                finish_time_ns = self.nand_sim_core_simple.handle_request(
+                    access_num_pages,
+                    current_time_ns,
+                )
 
                 cur_slot.is_finished = True
-                cur_slot.finish_event.notify(SimTime(int(finish_time-SimSession.sim_time.cycle)))
+                cur_slot.finish_event.notify(
+                    SimTime(int(finish_time_ns - current_time_ns))
+                )
         
 
     def handle_request(self,nand_request_slot:DepSlot[int]):
@@ -71,12 +77,12 @@ class NandSimCoreSimple:
         self.nand_config = nand_config
 
         
-    def handle_request(self, access_num_pages:int, arrive_time: float) -> float:
+    def handle_request(self, access_num_pages:int, arrive_time_ns: float) -> float:
         
         # plane level 并行 
-        latency = math.ceil(access_num_pages/self.nand_config.num_plane) * self.nand_config.tRead
-        finish_time = latency + arrive_time
-        return finish_time
+        latency_ns = math.ceil(access_num_pages/self.nand_config.num_plane) * self.nand_config.tRead
+        finish_time_ns = latency_ns + arrive_time_ns
+        return finish_time_ns
 
 
 

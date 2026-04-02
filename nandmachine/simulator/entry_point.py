@@ -35,9 +35,9 @@ def run_macro_ops(
     xpu.load_command(commands)
     SimSession.scheduler.run()
 
-    final_cycle = int(SimSession.sim_time.cycle)
+    final_time_ns = int(SimSession.sim_time.cycle)
     device = get_device_or_raise(device_name)
-    final_time_ns = ceil(final_cycle * 1e9 / device.compute_module.clock_freq)
+    final_cycle = ceil(final_time_ns * device.compute_module.clock_freq / 1e9)
     return MacroSimResult(cycle=final_cycle, time_ns=final_time_ns)
 
 

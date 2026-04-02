@@ -198,9 +198,9 @@ def test_run_macro_ops_returns_cycle_and_time_ns_for_a100():
     device = get_device_or_raise("A100_80GB")
 
     assert isinstance(result, MacroSimResult)
-    assert result.cycle == int(SimSession.sim_time.cycle)
-    assert result.time_ns == math.ceil(
-        result.cycle * 1e9 / device.compute_module.clock_freq
+    assert result.time_ns == int(SimSession.sim_time.cycle)
+    assert result.cycle == math.ceil(
+        result.time_ns * device.compute_module.clock_freq / 1e9
     )
 
 
@@ -217,9 +217,9 @@ def test_run_macro_ops_returns_cycle_and_time_ns_for_h100():
     device = get_device_or_raise("H100_SXM")
 
     assert isinstance(result, MacroSimResult)
-    assert result.cycle == int(SimSession.sim_time.cycle)
-    assert result.time_ns == math.ceil(
-        result.cycle * 1e9 / device.compute_module.clock_freq
+    assert result.time_ns == int(SimSession.sim_time.cycle)
+    assert result.cycle == math.ceil(
+        result.time_ns * device.compute_module.clock_freq / 1e9
     )
 
 

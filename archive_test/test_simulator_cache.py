@@ -199,21 +199,24 @@ def test_compute_engine_uses_cached_simulator_entrypoints(monkeypatch):
     softmax_calls: list[tuple[tuple[int, int], int]] = []
 
     class FakeMatMulSimulation:
-        def compile_and_simulate(self, pcb_module, compile_mode):
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
             return 321
 
     class FakeFlashSimulation:
-        def __init__(self, cycles: int):
-            self.cycles = cycles
+        def __init__(self, time_ns: int):
+            self.time_ns = time_ns
 
-        def compile_and_simulate(self, pcb_module, compile_mode):
-            return self.cycles
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
+            return self.time_ns
 
     class FakeSoftmaxSimulation:
         def __init__(self, dim, weight_bits):
             softmax_calls.append((dim, weight_bits))
 
-        def compile_and_simulate(self, pcb_module, compile_mode):
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
             return 30
 
     def fake_matmul_get_instance(dim, weight_bits=16):
@@ -244,8 +247,8 @@ def test_compute_engine_uses_cached_simulator_entrypoints(monkeypatch):
         FakeSoftmaxSimulation,
     )
 
-    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=16))
-    flash_cycles = engine.execute_macro_op(
+    matmul_time_ns = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=16))
+    flash_time_ns = engine.execute_macro_op(
         FlashAttnOp(
             qk_bmm_shape=(2, 4, 8, 6),
             sv_bmm_shape=(2, 4, 6, 3),
@@ -254,8 +257,8 @@ def test_compute_engine_uses_cached_simulator_entrypoints(monkeypatch):
         )
     )
 
-    assert matmul_cycles == 321
-    assert flash_cycles == 150
+    assert matmul_time_ns == 321
+    assert flash_time_ns == 150
     assert matmul_calls == [((9, 1, 11), 16)]
     assert flash_calls == [
         ((2, 4, 8, 6), 16, "QK"),
@@ -277,21 +280,24 @@ def test_compute_engine_uses_macro_op_weight_bits_for_all_latency_paths(monkeypa
     softmax_calls: list[tuple[tuple[int, int], int]] = []
 
     class FakeMatMulSimulation:
-        def compile_and_simulate(self, pcb_module, compile_mode):
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
             return 101
 
     class FakeFlashSimulation:
-        def __init__(self, cycles: int):
-            self.cycles = cycles
+        def __init__(self, time_ns: int):
+            self.time_ns = time_ns
 
-        def compile_and_simulate(self, pcb_module, compile_mode):
-            return self.cycles
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
+            return self.time_ns
 
     class FakeSoftmaxSimulation:
         def __init__(self, dim, weight_bits):
             softmax_calls.append((dim, weight_bits))
 
-        def compile_and_simulate(self, pcb_module, compile_mode):
+        def compile_and_simulate(self, pcb_module, compile_mode, return_unit="cycle"):
+            assert return_unit == "time_ns"
             return 31
 
     def fake_matmul_get_instance(dim, weight_bits=16):
@@ -322,8 +328,8 @@ def test_compute_engine_uses_macro_op_weight_bits_for_all_latency_paths(monkeypa
         FakeSoftmaxSimulation,
     )
 
-    matmul_cycles = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=8))
-    flash_cycles = engine.execute_macro_op(
+    matmul_time_ns = engine.execute_macro_op(MatMulOp(dim=(9, 1, 11), weight_bits=8))
+    flash_time_ns = engine.execute_macro_op(
         FlashAttnOp(
             qk_bmm_shape=(2, 4, 8, 6),
             sv_bmm_shape=(2, 4, 6, 3),
@@ -332,8 +338,8 @@ def test_compute_engine_uses_macro_op_weight_bits_for_all_latency_paths(monkeypa
         )
     )
 
-    assert matmul_cycles == 101
-    assert flash_cycles == 151
+    assert matmul_time_ns == 101
+    assert flash_time_ns == 151
     assert matmul_calls == [((9, 1, 11), 8)]
     assert flash_calls == [
         ((2, 4, 8, 6), 8, "QK"),
@@ -344,19 +350,19 @@ def test_compute_engine_uses_macro_op_weight_bits_for_all_latency_paths(monkeypa
     SimSession.reset()
 
 
-def test_compute_engine_vector_cycles_follow_macro_op_weight_bits():
+def test_compute_engine_vector_time_ns_follow_macro_op_weight_bits():
     SimSession.reset()
     SimSession.init()
 
     engine = xpu_module.ComputeEngine(make_config())
-    fp16_cycles = engine.execute_macro_op(
+    fp16_time_ns = engine.execute_macro_op(
         VectorOp(vector_op_type="rms_norm", vector_shape=[4096, 4096], weight_bits=16)
     )
-    fp8_cycles = engine.execute_macro_op(
+    fp8_time_ns = engine.execute_macro_op(
         VectorOp(vector_op_type="rms_norm", vector_shape=[4096, 4096], weight_bits=8)
     )
 
-    assert fp16_cycles > fp8_cycles
+    assert fp16_time_ns > fp8_time_ns
 
     SimSession.reset()
 
@@ -384,7 +390,14 @@ def test_transfer_engine_allreduce_uses_estimate_path(monkeypatch):
         def __init__(self, num_gpus, data_size, weight_bits):
             allreduce_calls.append((num_gpus, data_size, weight_bits))
 
-        def compile_and_simulate(self, pcb_module, interconnect_module, compile_mode):
+        def compile_and_simulate(
+            self,
+            pcb_module,
+            interconnect_module,
+            compile_mode,
+            return_unit="cycle",
+        ):
+            assert return_unit == "time_ns"
             return 66
 
     monkeypatch.setattr(
@@ -398,11 +411,11 @@ def test_transfer_engine_allreduce_uses_estimate_path(monkeypatch):
         lambda device_name, device_count: object(),
     )
 
-    allreduce_cycles = engine.execute_macro_op(
+    allreduce_time_ns = engine.execute_macro_op(
         AllReduceOp(num_ranks=4, data_size=128, weight_bits=16)
     )
 
-    assert allreduce_cycles == 66
+    assert allreduce_time_ns == 66
     assert allreduce_calls == [(4, 128, 16)]
 
     SimSession.reset()
@@ -419,7 +432,14 @@ def test_transfer_engine_all2all_uses_estimate_path(monkeypatch):
         def __init__(self, num_gpus, data_size, weight_bits):
             all2all_calls.append((num_gpus, data_size, weight_bits))
 
-        def compile_and_simulate(self, pcb_module, interconnect_module, compile_mode):
+        def compile_and_simulate(
+            self,
+            pcb_module,
+            interconnect_module,
+            compile_mode,
+            return_unit="cycle",
+        ):
+            assert return_unit == "time_ns"
             return 77
 
     monkeypatch.setattr(
@@ -433,11 +453,11 @@ def test_transfer_engine_all2all_uses_estimate_path(monkeypatch):
         lambda device_name, device_count: object(),
     )
 
-    all2all_cycles = engine.execute_macro_op(
+    all2all_time_ns = engine.execute_macro_op(
         All2AllOp(num_gpus=4, data_size=128, weight_bits=16)
     )
 
-    assert all2all_cycles == 77
+    assert all2all_time_ns == 77
     assert all2all_calls == [(4, 128, 16)]
 
     SimSession.reset()
@@ -480,10 +500,10 @@ def test_transfer_engine_waits_for_dependency_before_running(monkeypatch):
     engine = xpu_module.TransferEngine()
     engine.load_command_queue([transfer_slot])
 
-    execute_start_cycles: list[int] = []
+    execute_start_time_ns: list[int] = []
 
     def fake_execute_macro_op(macro_op):
-        execute_start_cycles.append(int(SimSession.sim_time.cycle))
+        execute_start_time_ns.append(int(SimSession.sim_time.cycle))
         return 3.0
 
     monkeypatch.setattr(engine, "execute_macro_op", fake_execute_macro_op)
@@ -491,7 +511,48 @@ def test_transfer_engine_waits_for_dependency_before_running(monkeypatch):
     DelayedFinish(dependency_slot)
     SimSession.scheduler.run()
 
-    assert execute_start_cycles == [6]
+    assert execute_start_time_ns == [6]
     assert transfer_slot.is_finished is True
+    assert int(SimSession.sim_time.cycle) == 10
+
+    SimSession.reset()
+
+
+def test_compute_engine_waits_for_execute_time_ns(monkeypatch):
+    class DelayedFinish(SimModule):
+        def __init__(self, slot: DepSlot):
+            super().__init__()
+            self.slot = slot
+            self.register_coroutine(self.process)
+
+        def process(self):
+            SimModule.wait_time(SimTime(5))
+            self.slot.is_finished = True
+            self.slot.finish_event.notify(SimTime(1))
+
+    SimSession.reset()
+    SimSession.init()
+
+    dependency_slot = DepSlot(VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16))
+    compute_slot = DepSlot(MatMulOp(dim=(2, 16, 8), weight_bits=16))
+    compute_slot.input_slots = [dependency_slot]
+
+    engine = xpu_module.ComputeEngine(make_config())
+    engine.load_command_queue([compute_slot])
+
+    execute_start_time_ns: list[int] = []
+
+    def fake_execute_macro_op(macro_op):
+        execute_start_time_ns.append(int(SimSession.sim_time.cycle))
+        return 7.0
+
+    monkeypatch.setattr(engine, "execute_macro_op", fake_execute_macro_op)
+
+    DelayedFinish(dependency_slot)
+    SimSession.scheduler.run()
+
+    assert execute_start_time_ns == [6]
+    assert compute_slot.is_finished is True
+    assert int(SimSession.sim_time.cycle) == 14
 
     SimSession.reset()
