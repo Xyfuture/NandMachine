@@ -8,7 +8,11 @@ from nandmachine.config.inference_config import (
     ParallelConfig,
 )
 from nandmachine.config.model_config import LlamaModelConfig, Qwen3ModelConfig
-from nandmachine.frontend.utlis import calculate_kv_cache_state
+from nandmachine.frontend.utlis import (
+    build_imbalanced_kv_cache_state,
+    build_kv_cache_state,
+    calculate_kv_cache_state,
+)
 
 
 def make_nand_config(page_size: int = 1, num_plane: int = 4) -> NandConfig:
@@ -76,7 +80,6 @@ def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_dp_rank_batch():
     assert state.num_hyper_pages_per_layer == 480
     assert state.kv_block_size_tokens == 16
     assert state.num_kv_blocks == 30
-    assert state.kv_cache_num_pages_per_layer == state.num_nand_pages_per_layer
 
 
 def test_calculate_kv_cache_state_for_mha_uses_attention_heads_as_kv_heads():
@@ -380,6 +383,181 @@ def test_calculate_kv_cache_state_keeps_block_shape_when_total_cache_is_zero():
     assert state.num_hyper_pages_per_layer == 0
     assert state.kv_block_size_tokens == 2
     assert state.num_kv_blocks == 0
+
+
+def test_build_imbalanced_kv_cache_state_only_updates_num_hyper_pages():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+    nand_config = NandConfig(
+        num_channels=2,
+        num_plane=4,
+        num_block=64,
+        num_pages=256,
+        tRead=1.0,
+        tWrite=1.0,
+        tErase=1.0,
+        page_size=8,
+        sram_threshold=1,
+    )
+    inference_config = make_inference_config(
+        batch_size=10,
+        input_sequence_length=128,
+        output_sequence_length=32,
+        kv_cache_bits=16,
+        parallel_config=DenseParallelConfig(num_ranks=4, tp_size=1, dp_size=4),
+    )
+
+    balanced_state = build_kv_cache_state(
+        nand_config,
+        model_config,
+        inference_config,
+    )
+    imbalanced_state = build_imbalanced_kv_cache_state(
+        nand_config,
+        model_config,
+        inference_config,
+    )
+
+    assert imbalanced_state.total_kv_cache_size_per_layer == balanced_state.total_kv_cache_size_per_layer
+    assert imbalanced_state.num_nand_pages_per_layer == balanced_state.num_nand_pages_per_layer
+    assert imbalanced_state.kv_block_size_tokens == balanced_state.kv_block_size_tokens
+    assert imbalanced_state.num_kv_blocks == balanced_state.num_kv_blocks
+    assert balanced_state.num_hyper_pages_per_layer == 60
+    assert imbalanced_state.num_hyper_pages_per_layer == 30
+
+
+def test_build_imbalanced_kv_cache_state_uses_num_channels_in_bin_count():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+    inference_config = make_inference_config(
+        batch_size=1,
+        input_sequence_length=16,
+        output_sequence_length=0,
+        kv_cache_bits=8,
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        kv_block_size_bytes=8 * 1024,
+    )
+
+    state_one_channel = build_imbalanced_kv_cache_state(
+        NandConfig(
+            num_channels=1,
+            num_plane=1,
+            num_block=4,
+            num_pages=8,
+            tRead=1.0,
+            tWrite=1.0,
+            tErase=1.0,
+            page_size=8,
+            sram_threshold=1,
+        ),
+        model_config,
+        inference_config,
+    )
+    state_two_channels = build_imbalanced_kv_cache_state(
+        NandConfig(
+            num_channels=2,
+            num_plane=1,
+            num_block=4,
+            num_pages=8,
+            tRead=1.0,
+            tWrite=1.0,
+            tErase=1.0,
+            page_size=8,
+            sram_threshold=1,
+        ),
+        model_config,
+        inference_config,
+    )
+
+    assert state_one_channel.num_kv_blocks == 4
+    assert state_one_channel.num_hyper_pages_per_layer == 4
+    assert state_two_channels.num_hyper_pages_per_layer == 3
+
+
+def test_build_imbalanced_kv_cache_state_returns_zero_when_no_kv_blocks():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+    inference_config = make_inference_config(
+        batch_size=2,
+        input_sequence_length=0,
+        output_sequence_length=0,
+        kv_cache_bits=16,
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        kv_block_size_bytes=5_000,
+    )
+
+    state = build_imbalanced_kv_cache_state(
+        make_nand_config(page_size=4, num_plane=2),
+        model_config,
+        inference_config,
+    )
+
+    assert state.total_kv_cache_size_per_layer == 0
+    assert state.num_kv_blocks == 0
+    assert state.num_hyper_pages_per_layer == 0
+
+
+def test_build_imbalanced_kv_cache_state_rejects_non_positive_bin_count():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+    nand_config = NandConfig(
+        num_channels=1,
+        num_plane=1,
+        num_block=1,
+        num_pages=1,
+        tRead=1.0,
+        tWrite=1.0,
+        tErase=1.0,
+        page_size=1,
+        sram_threshold=1,
+    )
+    inference_config = make_inference_config(
+        batch_size=1,
+        input_sequence_length=1,
+        output_sequence_length=0,
+        kv_cache_bits=8,
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        kv_block_size_bytes=2 * 1024,
+    )
+
+    with pytest.raises(ValueError, match="num_bins must be positive, got 0"):
+        build_imbalanced_kv_cache_state(
+            nand_config,
+            model_config,
+            inference_config,
+        )
 
 
 def test_qwen3_model_config_from_dict_reads_num_hidden_layers():

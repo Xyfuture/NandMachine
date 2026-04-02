@@ -9,15 +9,16 @@ class InsufficientGPUMemoryError(RuntimeError):
 
 @dataclass
 class KVCacheState:
-    total_kv_cache_size_per_layer: int   # 全局 batch size 下的 总KV Cache 容量 
-    num_nand_pages_per_layer: int
-    num_hyper_pages_per_layer: int
+    total_kv_cache_size_per_layer: int   # 全局 batch size 下的 总KV Cache 容量  bytes
 
     kv_block_size_tokens: int
+
     num_kv_blocks: int
 
-    # legacy
-    kv_cache_num_pages_per_layer: int
+    num_nand_pages_per_layer: int # 需要多少 page 来存储 所有的 KV Block
+    num_hyper_pages_per_layer: int # page 组合成多少个 hyper page
+
+
 
 
 @dataclass(frozen=True)

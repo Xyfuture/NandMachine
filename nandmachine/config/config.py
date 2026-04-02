@@ -8,10 +8,10 @@ class MemoryConfig:
 
 @dataclass 
 class NandConfig(MemoryConfig):
-    num_channels:int
+    num_channels:int # 一个 channel 有很多 plane，plane 最基础的读写单元就是 一个  page
     num_plane:int  #  per channel
-    num_block:int  #  per plane
-    num_pages:int  # per block 
+    num_block:int  #  per plane -- block 是 nand 的erase单元， 暂时没什么用
+    num_pages:int  # per block  -- page 是一个 plane 最基础的单元。暂时没什么用 
 
     tRead: float # ns
     tWrite: float 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from random import Random
 
 from nandmachine.config.cache_state import (
     BatchSizeCapacityResult,
@@ -54,6 +55,10 @@ class _MoEParallelism:
     ffn_tp_size: int
 
 
+_IMBALANCED_KV_CACHE_MONTE_CARLO_TRIALS = 100
+_IMBALANCED_KV_CACHE_RANDOM_SEED = 0
+
+
 def _ceil_div(numerator: int, denominator: int) -> int:
     if denominator <= 0:
         raise ValueError(f"denominator must be positive, got {denominator}")
@@ -66,6 +71,40 @@ def _bits_to_bytes(value_count: int, bits_per_value: int) -> int:
     if bits_per_value <= 0:
         raise ValueError(f"bits_per_value must be positive, got {bits_per_value}")
     return _ceil_div(value_count * bits_per_value, 8)
+
+
+
+
+def _simulate_max_bin_load_mean(
+    num_balls: int,
+    num_bins: int,
+    num_trials: int,
+    seed: int,
+) -> int:
+    if num_balls < 0:
+        raise ValueError(f"num_balls must be non-negative, got {num_balls}")
+    if num_bins <= 0:
+        raise ValueError(f"num_bins must be positive, got {num_bins}")
+    if num_trials <= 0:
+        raise ValueError(f"num_trials must be positive, got {num_trials}")
+    if num_balls == 0:
+        return 0
+
+    rng = Random(seed)
+    total_max_load = 0
+
+    for _ in range(num_trials):
+        bin_loads = [0] * num_bins
+        max_load = 0
+        for _ in range(num_balls):
+            bin_index = rng.randrange(num_bins)
+            load = bin_loads[bin_index] + 1
+            bin_loads[bin_index] = load
+            if load > max_load:
+                max_load = load
+        total_max_load += max_load
+
+    return _ceil_div(total_max_load, num_trials)
 
 
 def _resolve_dp_size(parallel_config: ParallelConfig | None) -> int:
@@ -582,7 +621,6 @@ def calculate_kv_cache_state(
         num_hyper_pages_per_layer=num_hyper_pages,
         kv_block_size_tokens=kv_block_size_tokens,
         num_kv_blocks=num_kv_blocks,
-        kv_cache_num_pages_per_layer=num_nand_pages,
     )
 
 
@@ -592,6 +630,30 @@ def build_kv_cache_state(
     inference_config: InferenceConfig,
 ) -> KVCacheState:
     return calculate_kv_cache_state(nand_config, model_config, inference_config)
+
+
+def build_imbalanced_kv_cache_state(
+    nand_config: NandConfig,
+    model_config: ModelConfigBase,
+    inference_config: InferenceConfig,
+) -> KVCacheState:
+    balanced_state = build_kv_cache_state(nand_config, model_config, inference_config)
+    bins = nand_config.num_plane * nand_config.num_channels * nand_config.page_size_bytes  // inference_config.kv_block_size_bytes
+
+    num_hyper_pages = _simulate_max_bin_load_mean(
+        num_balls=balanced_state.num_kv_blocks,
+        num_bins=bins,
+        num_trials=_IMBALANCED_KV_CACHE_MONTE_CARLO_TRIALS,
+        seed=_IMBALANCED_KV_CACHE_RANDOM_SEED,
+    )
+
+    return KVCacheState(
+        total_kv_cache_size_per_layer=balanced_state.total_kv_cache_size_per_layer,
+        num_nand_pages_per_layer=balanced_state.num_nand_pages_per_layer,
+        num_hyper_pages_per_layer=num_hyper_pages,
+        kv_block_size_tokens=balanced_state.kv_block_size_tokens,
+        num_kv_blocks=balanced_state.num_kv_blocks,
+    )
 
 
 def validate_batch_size_or_raise(
@@ -712,6 +774,7 @@ def calculate_max_batch_size(
 
 __all__ = [
     "build_kv_cache_state",
+    "build_imbalanced_kv_cache_state",
     "calculate_kv_cache_state",
     "validate_batch_size_or_raise",
     "calculate_max_batch_size",
