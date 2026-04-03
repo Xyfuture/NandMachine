@@ -59,3 +59,14 @@
 
 
 
+简化思路:
+
+关于 xpu.py 中 class xPU 的签名
+我们只关心 HBF 和 HBM 的带宽，不关心其他的内容 
+- HBF 的带宽，通过 nand config 可以通过 num_planes * num_channels * (page_size / tR) -- 要注意单位的问题，统一为 bytes/ns 或者和 llmcompass 中对应的带宽单位
+- HBM 的带宽，通过一个单独的参数传进来 -- 直接标明是多少 GB/s 就 ok 了
+- hbf_sram_intermediate_buffer / memory_architecture  之类的参数就不要了， 不需要 hbm only 的东西
+
+
+
+nand 部分添加一个 feature ，等待容量空闲的特性 

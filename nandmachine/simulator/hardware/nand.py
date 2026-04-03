@@ -80,7 +80,7 @@ class NandSimCoreSimple:
     def handle_request(self, access_num_pages:int, arrive_time_ns: float) -> float:
         
         # plane level 并行 
-        latency_ns = math.ceil(access_num_pages/self.nand_config.num_plane) * self.nand_config.tRead
+        latency_ns = math.ceil(access_num_pages/(self.nand_config.num_plane*self.nand_config.num_channels)) * self.nand_config.tRead
         finish_time_ns = latency_ns + arrive_time_ns
         return finish_time_ns
 
