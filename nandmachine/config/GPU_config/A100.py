@@ -15,6 +15,8 @@ from nandmachine.config.GPU_config.schema import (
 
 # A100 scalar parameters
 A100_MEMORY_CAPACITY_BYTES = 80 * 1024**3
+A100_HBM_STACK_COUNT = 5
+A100_HBM_STACK_BYTES = A100_MEMORY_CAPACITY_BYTES // A100_HBM_STACK_COUNT
 A100_CORE_COUNT = 108
 A100_CLOCK_FREQ_HZ = 1.41e9
 A100_L2_SIZE_BYTES = 40 * 1024**2
@@ -75,13 +77,24 @@ A100_COMPUTE_MODULE_FP16 = ComputeModule(
 A100_IO_MODULE = IOModule(bandwidth=A100_IO_BW_BYTES_PER_SEC)
 A100_80GB_FP16 = Device(
     compute_module=A100_COMPUTE_MODULE_FP16,
-    io_module=A100_IO_MODULE,
+    io_module=IOModule(
+        bandwidth=A100_IO_BW_BYTES_PER_SEC,
+        hbm_bandwidth=A100_IO_BW_BYTES_PER_SEC,
+        hbf_bandwidth=0.0,
+    ),
     memory_capacity_bytes=A100_MEMORY_CAPACITY_BYTES,
+    hbm_memory_capacity_bytes=A100_MEMORY_CAPACITY_BYTES,
+    hbf_memory_capacity_bytes=0,
+    memory_architecture_mode="hbm_only",
+    hbm_stack_count=A100_HBM_STACK_COUNT,
+    hbf_stack_count=0,
 )
 
 __all__ = [
     "A100_CORE_COUNT",
     "A100_MEMORY_CAPACITY_BYTES",
+    "A100_HBM_STACK_COUNT",
+    "A100_HBM_STACK_BYTES",
     "A100_CLOCK_FREQ_HZ",
     "A100_L2_SIZE_BYTES",
     "A100_L2_BW_BYTES_PER_CYCLE",

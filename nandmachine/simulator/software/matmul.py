@@ -27,10 +27,155 @@ from nandmachine.simulator.software.scalesim_runtime_patch import (
 apply_scalesim_total_cycles_patch()
 
 ReturnUnit = Literal["cycle", "time_ns"]
+ENABLE_CLI_HBF_SRAM_BUFFER = True
 
 
 def _cycle_count_to_time_ns(cycle_count: int, pcb_module: Device) -> int:
     return ceil(cycle_count * 1e9 / pcb_module.compute_module.clock_freq)
+
+
+def _get_main_memory_bandwidth_per_cycle_or_raise(
+    pcb_module: Device,
+    bandwidth_type: Literal["total", "hbm", "hbf"],
+) -> float:
+    if bandwidth_type == "total":
+        bandwidth = pcb_module.io_module.total_bandwidth
+    elif bandwidth_type == "hbm":
+        bandwidth = pcb_module.io_module.hbm_bandwidth
+    elif bandwidth_type == "hbf":
+        bandwidth = pcb_module.io_module.hbf_bandwidth
+    else:
+        raise ValueError(f"Unsupported bandwidth_type: {bandwidth_type}")
+
+    if bandwidth <= 0:
+        raise ValueError(
+            f"{bandwidth_type}_bandwidth must be > 0 for "
+            f"memory_architecture_mode={pcb_module.memory_architecture_mode}, "
+            f"got {bandwidth}"
+        )
+
+    bandwidth_per_cycle = bandwidth / pcb_module.compute_module.clock_freq
+    if bandwidth_per_cycle <= 0:
+        raise ValueError(
+            f"{bandwidth_type}_bandwidth_per_cycle must be > 0 for "
+            f"memory_architecture_mode={pcb_module.memory_architecture_mode}, "
+            f"got {bandwidth_per_cycle}"
+        )
+    return bandwidth_per_cycle
+
+
+def _bytes_to_cycle_count_or_raise(num_bytes: int, bandwidth_per_cycle: float) -> int:
+    if num_bytes < 0:
+        raise ValueError(f"num_bytes must be >= 0, got {num_bytes}")
+    if num_bytes == 0:
+        return 0
+    return ceil(num_bytes / bandwidth_per_cycle)
+
+
+def _simulate_default_main_memory_io_cycle_count(
+    num_bytes: int,
+    pcb_module: Device,
+) -> int:
+    total_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
+        pcb_module,
+        "total",
+    )
+    return _bytes_to_cycle_count_or_raise(num_bytes, total_bandwidth_per_cycle)
+
+
+def _simulate_cli_main_memory_read_cycle_count(
+    pcb_module: Device,
+    *,
+    mk_bytes: int,
+    kn_bytes: int,
+    mn_read_bytes: int,
+) -> int:
+    if pcb_module.memory_architecture_mode != "cli":
+        raise ValueError(
+            "CLI main-memory read formula can only be used for CLI devices, "
+            f"got {pcb_module.memory_architecture_mode}"
+        )
+
+    hbm_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
+        pcb_module,
+        "hbm",
+    )
+    hbf_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
+        pcb_module,
+        "hbf",
+    )
+
+    if ENABLE_CLI_HBF_SRAM_BUFFER:
+        total_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
+            pcb_module,
+            "total",
+        )
+        return max(
+            _bytes_to_cycle_count_or_raise(mk_bytes, hbm_bandwidth_per_cycle),
+            _bytes_to_cycle_count_or_raise(kn_bytes, hbf_bandwidth_per_cycle),
+        ) + _bytes_to_cycle_count_or_raise(mn_read_bytes, total_bandwidth_per_cycle)
+
+    return max(
+        _bytes_to_cycle_count_or_raise(
+            mk_bytes + mn_read_bytes,
+            hbm_bandwidth_per_cycle,
+        ),
+        _bytes_to_cycle_count_or_raise(kn_bytes, hbf_bandwidth_per_cycle),
+    )
+
+
+def _simulate_cli_main_memory_write_cycle_count(
+    pcb_module: Device,
+    *,
+    mn_write_bytes: int,
+) -> int:
+    if pcb_module.memory_architecture_mode != "cli":
+        raise ValueError(
+            "CLI main-memory write formula can only be used for CLI devices, "
+            f"got {pcb_module.memory_architecture_mode}"
+        )
+
+    bandwidth_type: Literal["total", "hbm"] = (
+        "total" if ENABLE_CLI_HBF_SRAM_BUFFER else "hbm"
+    )
+    bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
+        pcb_module,
+        bandwidth_type,
+    )
+    return _bytes_to_cycle_count_or_raise(mn_write_bytes, bandwidth_per_cycle)
+
+
+def _simulate_main_memory_read_cycle_count(
+    pcb_module: Device,
+    *,
+    mk_bytes: int,
+    kn_bytes: int,
+    mn_read_bytes: int,
+) -> int:
+    if pcb_module.memory_architecture_mode == "cli":
+        return _simulate_cli_main_memory_read_cycle_count(
+            pcb_module,
+            mk_bytes=mk_bytes,
+            kn_bytes=kn_bytes,
+            mn_read_bytes=mn_read_bytes,
+        )
+    return _simulate_default_main_memory_io_cycle_count(
+        mk_bytes + kn_bytes + mn_read_bytes,
+        pcb_module,
+    )
+
+
+def _simulate_main_memory_write_cycle_count(
+    pcb_module: Device,
+    *,
+    mn_write_bytes: int,
+) -> int:
+    if pcb_module.memory_architecture_mode == "cli":
+        return _simulate_cli_main_memory_write_cycle_count(
+            pcb_module,
+            mn_write_bytes=mn_write_bytes,
+        )
+    return _simulate_default_main_memory_io_cycle_count(mn_write_bytes, pcb_module)
 
 
 class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N的矩阵
@@ -243,24 +388,41 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             compile_mode == "heuristic-GPU"
             or compile_mode == "heuristic-our-throughput"
         ): # GEMV场景的heuristic快速计算，默认GEMV几乎都是io bound，就不做复杂的计算建模
-            working_set_size = M * K + N * K + M * N
-            total_io_count = working_set_size * self.word_size
-            io_latency = total_io_count / pcb_module.io_module.bandwidth
             total_flop_count = 2 * M * N * K
             effective_total_vector_flops_per_cycle = (
                 self._get_total_vector_flops_per_cycle(
                     pcb_module, self.weight_bits
                 )
             )
-            compute_latency = (
-                total_flop_count
-                / effective_total_vector_flops_per_cycle
-                / pcb_module.compute_module.clock_freq
+            compute_cycle_count = (
+                total_flop_count / effective_total_vector_flops_per_cycle
             )
-            best_cycle_count = ceil(
-                max(compute_latency, io_latency)
-                * pcb_module.compute_module.clock_freq
-            )
+
+            if pcb_module.memory_architecture_mode == "cli":
+                io_cycle_count = (
+                    _simulate_main_memory_read_cycle_count(
+                        pcb_module,
+                        mk_bytes=M * K * self.word_size,
+                        kn_bytes=K * N * self.word_size,
+                        mn_read_bytes=0,
+                    )
+                    + _simulate_main_memory_write_cycle_count(
+                        pcb_module,
+                        mn_write_bytes=M * N * self.word_size,
+                    )
+                )
+                best_cycle_count = ceil(max(compute_cycle_count, io_cycle_count))
+            else:
+                working_set_size = M * K + N * K + M * N
+                total_io_count = working_set_size * self.word_size
+                io_latency = total_io_count / pcb_module.io_module.bandwidth
+                compute_latency = (
+                    compute_cycle_count / pcb_module.compute_module.clock_freq
+                )
+                best_cycle_count = ceil(
+                    max(compute_latency, io_latency)
+                    * pcb_module.compute_module.clock_freq
+                )
             return self.CompileResult(
                 best_mapping=None,
                 best_cycle_count=best_cycle_count,
@@ -839,9 +1001,10 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 self.look_up_table,
             )
 
-        total_cycle_count = 0
-        total_cycle_count += (
-            l2_tiles[0, 0, 0].M_K_io_cycle_count + l2_tiles[0, 0, 0].K_N_io_cycle_count
+        total_cycle_count = l2_tiles[0, 0, 0].get_main_memory_read_cycle_count(
+            read_mk=True,
+            read_kn=True,
+            read_mn=False,
         ) # 读取第一个矩阵的第一个tile和第二个矩阵的第一个tile
 
         previous_m = 0 # 先前l2tiles中元素的index
@@ -862,15 +1025,22 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
 
             # current tile read latency
             if m == previous_m and k == previous_k:
-                current_tile_read_cycle_count = l2_tile.K_N_io_cycle_count
+                should_read_mk = False
+                should_read_kn = True
             elif n == previous_n and k == previous_k:
-                current_tile_read_cycle_count = l2_tile.M_K_io_cycle_count
+                should_read_mk = True
+                should_read_kn = False
             else:
-                current_tile_read_cycle_count = (
-                    l2_tile.M_K_io_cycle_count + l2_tile.K_N_io_cycle_count
-                )
-            if k > 0 and not (m == previous_m and n == previous_n): # not后确保只在切换输出矩阵mn tile的位置时才输出结果，把mn tile中间数据暂存于主存，mn不切换时只是累加。k>0要求只有非第一次计算该mn块时才从主存中读取中间数据
-                current_tile_read_cycle_count += l2_tile.M_N_io_cycle_count
+                should_read_mk = True
+                should_read_kn = True
+            should_read_mn = k > 0 and not (
+                m == previous_m and n == previous_n
+            ) # not后确保只在切换输出矩阵mn tile的位置时才输出结果，把mn tile中间数据暂存于主存，mn不切换时只是累加。k>0要求只有非第一次计算该mn块时才从主存中读取中间数据
+            current_tile_read_cycle_count = l2_tile.get_main_memory_read_cycle_count(
+                read_mk=should_read_mk,
+                read_kn=should_read_kn,
+                read_mn=should_read_mn,
+            )
             # previous tile compute latency
             previous_tile_compute_cycle_count = previous_l2_tile.compute_cycle_count
             if previous_k > 0:  # previous_k>0要求在非第一轮时要对mn块与主存中的中间数据进行按元素求和、读、写（三个部分的cycle）。原文是if k>0:
@@ -878,10 +1048,9 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                     previous_l2_tile.K_reduction_cycle_count
                 )
             # previous tile write latency
-            if m == previous_m and n == previous_n:
-                previous_tile_write_cycle_count = 0
-            else:
-                previous_tile_write_cycle_count = previous_l2_tile.M_N_io_cycle_count
+            previous_tile_write_cycle_count = previous_l2_tile.get_main_memory_write_cycle_count(
+                write_mn=not (m == previous_m and n == previous_n)
+            )
 
             # read current tile, compute previous tile, write previous tile
             if mapping.is_l2_double_buffering:  # pipelined
@@ -904,7 +1073,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
 
         # compute and write last tile
         total_cycle_count += (
-            l2_tiles[-1, -1, -1].M_N_io_cycle_count
+            l2_tiles[-1, -1, -1].get_main_memory_write_cycle_count(write_mn=True)
             + l2_tiles[-1, -1, -1].compute_cycle_count
         )
 
@@ -932,6 +1101,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             self.N = N
             self.K = K
             self.precision = precision
+            self.device = pcb_module
             word_size = precision.word_size
             effective_total_vector_flops_per_cycle = (
                 MatMul_Simulation._get_total_vector_flops_per_cycle(
@@ -947,35 +1117,35 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 / pcb_module.compute_module.l2_bandwidth_per_cycle
             )
             self.K_reduction_io_count = 2 * M * N * word_size
-            self.M_K_io_cycle_count = self.simulate_l2_tile_io_cycle_count(
-                M, K, precision, pcb_module
-            )
-            self.K_N_io_cycle_count = self.simulate_l2_tile_io_cycle_count(
-                K, N, precision, pcb_module
-            )
-            self.M_N_io_cycle_count = self.simulate_l2_tile_io_cycle_count(
-                M, N, precision, pcb_module
-            )
+            self.mk_io_bytes = M * K * word_size
+            self.kn_io_bytes = K * N * word_size
+            self.mn_io_bytes = M * N * word_size
             self.compute_cycle_count = self.simulate_l2_tile_compute_cycle_count(
                 M, N, K, precision, mapping, pcb_module, look_up_table
             )
 
-        def simulate_l2_tile_io_cycle_count(
+        def get_main_memory_read_cycle_count(
             self,
-            M: int,
-            N: int,
-            precision: "MatMul_Simulation.PrecisionContext",
-            chiplet_module: Device,
-        ): # l2 io是指片外内存（dram/hbm）到片内共享缓存（sram）之间的io
-            word_size = precision.word_size
-            return ceil(
-                M
-                * N
-                * word_size
-                / (
-                    chiplet_module.io_module.bandwidth
-                    / chiplet_module.compute_module.clock_freq
-                )
+            *,
+            read_mk: bool,
+            read_kn: bool,
+            read_mn: bool,
+        ) -> int:
+            return _simulate_main_memory_read_cycle_count(
+                self.device,
+                mk_bytes=self.mk_io_bytes if read_mk else 0,
+                kn_bytes=self.kn_io_bytes if read_kn else 0,
+                mn_read_bytes=self.mn_io_bytes if read_mn else 0,
+            )
+
+        def get_main_memory_write_cycle_count(
+            self,
+            *,
+            write_mn: bool,
+        ) -> int:
+            return _simulate_main_memory_write_cycle_count(
+                self.device,
+                mn_write_bytes=self.mn_io_bytes if write_mn else 0,
             )
 
         def simulate_l2_tile_compute_cycle_count(

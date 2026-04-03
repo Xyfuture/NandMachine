@@ -7,7 +7,9 @@ from Desim import SimSession
 
 from nandmachine.commands.macro import MacroOp
 from nandmachine.config.config import NandConfig
-from nandmachine.config.hardware_config import get_device_or_raise
+from nandmachine.config.hbm_hbf_architecture import (
+    build_device_for_hbm_hbf_architecture_or_raise,
+)
 from nandmachine.simulator.hardware.xpu import xPU
 
 
@@ -21,6 +23,8 @@ def run_macro_ops(
     nand_config: NandConfig,
     commands: list[MacroOp],
     *,
+    hbf_sram_intermediate_buffer: bool,
+    memory_architecture: dict[str, object],
     device_name: str = "A100_80GB",
     compile_mode: str = "heuristic-GPU",
 ) -> MacroSimResult:
@@ -29,6 +33,8 @@ def run_macro_ops(
 
     xpu = xPU(
         nand_config,
+        hbf_sram_intermediate_buffer=hbf_sram_intermediate_buffer,
+        memory_architecture=memory_architecture,
         device_name=device_name,
         compile_mode=compile_mode,
     )
@@ -36,7 +42,10 @@ def run_macro_ops(
     SimSession.scheduler.run()
 
     final_time_ns = int(SimSession.sim_time.cycle)
-    device = get_device_or_raise(device_name)
+    device = build_device_for_hbm_hbf_architecture_or_raise(
+        device_name,
+        memory_architecture,
+    )
     final_cycle = ceil(final_time_ns * device.compute_module.clock_freq / 1e9)
     return MacroSimResult(cycle=final_cycle, time_ns=final_time_ns)
 

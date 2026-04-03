@@ -100,8 +100,28 @@ class ComputeModule:
 
 
 class IOModule:
-    def __init__(self, bandwidth: float) -> None:
-        self.bandwidth = bandwidth
+    def __init__(
+        self,
+        bandwidth: float,
+        *,
+        hbm_bandwidth: float | None = None,
+        hbf_bandwidth: float = 0.0,
+    ) -> None:
+        if bandwidth < 0:
+            raise ValueError(f"bandwidth must be >= 0, got {bandwidth}")
+        if hbm_bandwidth is not None and hbm_bandwidth < 0:
+            raise ValueError(
+                f"hbm_bandwidth must be >= 0, got {hbm_bandwidth}"
+            )
+        if hbf_bandwidth < 0:
+            raise ValueError(f"hbf_bandwidth must be >= 0, got {hbf_bandwidth}")
+
+        self.total_bandwidth = bandwidth
+        self.hbm_bandwidth = bandwidth if hbm_bandwidth is None else hbm_bandwidth
+        self.hbf_bandwidth = hbf_bandwidth
+
+        # Keep the legacy field as an alias of total bandwidth.
+        self.bandwidth = self.total_bandwidth
 
 
 class Device:
@@ -110,7 +130,51 @@ class Device:
         compute_module: ComputeModule,
         io_module: IOModule,
         memory_capacity_bytes: int,
+        *,
+        hbm_memory_capacity_bytes: int | None = None,
+        hbf_memory_capacity_bytes: int = 0,
+        memory_architecture_mode: str = "hbm_only",
+        hbm_stack_count: int | None = None,
+        hbf_stack_count: int = 0,
     ) -> None:
+        if memory_capacity_bytes < 0:
+            raise ValueError(
+                f"memory_capacity_bytes must be >= 0, got {memory_capacity_bytes}"
+            )
+        if hbf_memory_capacity_bytes < 0:
+            raise ValueError(
+                "hbf_memory_capacity_bytes must be >= 0, "
+                f"got {hbf_memory_capacity_bytes}"
+            )
+        if hbm_memory_capacity_bytes is None:
+            hbm_memory_capacity_bytes = memory_capacity_bytes - hbf_memory_capacity_bytes
+        if hbm_memory_capacity_bytes < 0:
+            raise ValueError(
+                "hbm_memory_capacity_bytes must be >= 0, "
+                f"got {hbm_memory_capacity_bytes}"
+            )
+        if hbm_memory_capacity_bytes + hbf_memory_capacity_bytes != memory_capacity_bytes:
+            raise ValueError(
+                "HBM/HBF capacity split must sum to total capacity, got "
+                f"total={memory_capacity_bytes}, "
+                f"hbm={hbm_memory_capacity_bytes}, "
+                f"hbf={hbf_memory_capacity_bytes}"
+            )
+        if hbm_stack_count is not None and hbm_stack_count < 0:
+            raise ValueError(
+                f"hbm_stack_count must be >= 0, got {hbm_stack_count}"
+            )
+        if hbf_stack_count < 0:
+            raise ValueError(f"hbf_stack_count must be >= 0, got {hbf_stack_count}")
+
         self.compute_module = compute_module
         self.io_module = io_module
-        self.memory_capacity_bytes = memory_capacity_bytes
+        self.total_memory_capacity_bytes = memory_capacity_bytes
+        self.hbm_memory_capacity_bytes = hbm_memory_capacity_bytes
+        self.hbf_memory_capacity_bytes = hbf_memory_capacity_bytes
+        self.memory_architecture_mode = memory_architecture_mode
+        self.hbm_stack_count = hbm_stack_count
+        self.hbf_stack_count = hbf_stack_count
+
+        # Keep the legacy field as an alias of total memory capacity.
+        self.memory_capacity_bytes = self.total_memory_capacity_bytes

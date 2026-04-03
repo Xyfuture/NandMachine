@@ -17,6 +17,10 @@ from nandmachine.config.GPU_config.schema import (
 
 # H200 SXM scalar parameters
 H200_SXM_MEMORY_CAPACITY_BYTES = 141 * 1024**3
+H200_HBM_STACK_COUNT = 6
+H200_HBM_STACK_BYTES = (47 * 1024**3) // 2
+H200_HBF_STACK_BYTES = 256 * 1024**3
+H200_MEMORY_BANDWIDTH_PER_STACK_BYTES_PER_SEC = 800e9
 H200_SXM_CORE_COUNT = 132
 H200_SXM_CLOCK_FREQ_HZ = 1.83e9
 H200_SXM_L2_SIZE_BYTES = 50 * 1024**2
@@ -87,8 +91,17 @@ H200_SXM_COMPUTE_MODULE_FP16 = ComputeModule(
 H200_SXM_IO_MODULE = IOModule(bandwidth=H200_SXM_IO_BW_BYTES_PER_SEC)
 H200_SXM_FP16 = Device(
     compute_module=H200_SXM_COMPUTE_MODULE_FP16,
-    io_module=H200_SXM_IO_MODULE,
+    io_module=IOModule(
+        bandwidth=H200_SXM_IO_BW_BYTES_PER_SEC,
+        hbm_bandwidth=H200_SXM_IO_BW_BYTES_PER_SEC,
+        hbf_bandwidth=0.0,
+    ),
     memory_capacity_bytes=H200_SXM_MEMORY_CAPACITY_BYTES,
+    hbm_memory_capacity_bytes=H200_SXM_MEMORY_CAPACITY_BYTES,
+    hbf_memory_capacity_bytes=0,
+    memory_architecture_mode="hbm_only",
+    hbm_stack_count=H200_HBM_STACK_COUNT,
+    hbf_stack_count=0,
 )
 
 H200_NVL_VECTOR_UNIT_FP16 = VectorUnit(
@@ -120,11 +133,24 @@ H200_NVL_COMPUTE_MODULE_FP16 = ComputeModule(
 H200_NVL_IO_MODULE = IOModule(bandwidth=H200_NVL_IO_BW_BYTES_PER_SEC)
 H200_NVL_FP16 = Device(
     compute_module=H200_NVL_COMPUTE_MODULE_FP16,
-    io_module=H200_NVL_IO_MODULE,
+    io_module=IOModule(
+        bandwidth=H200_NVL_IO_BW_BYTES_PER_SEC,
+        hbm_bandwidth=H200_NVL_IO_BW_BYTES_PER_SEC,
+        hbf_bandwidth=0.0,
+    ),
     memory_capacity_bytes=H200_NVL_MEMORY_CAPACITY_BYTES,
+    hbm_memory_capacity_bytes=H200_NVL_MEMORY_CAPACITY_BYTES,
+    hbf_memory_capacity_bytes=0,
+    memory_architecture_mode="hbm_only",
+    hbm_stack_count=H200_HBM_STACK_COUNT,
+    hbf_stack_count=0,
 )
 
 __all__ = [
+    "H200_HBM_STACK_COUNT",
+    "H200_HBM_STACK_BYTES",
+    "H200_HBF_STACK_BYTES",
+    "H200_MEMORY_BANDWIDTH_PER_STACK_BYTES_PER_SEC",
     "H200_SXM_CORE_COUNT",
     "H200_SXM_MEMORY_CAPACITY_BYTES",
     "H200_SXM_CLOCK_FREQ_HZ",

@@ -117,6 +117,10 @@ def _build_sim_inference_config() -> InferenceConfig:
     )
 
 
+def _build_hbm_only_architecture() -> dict[str, object]:
+    return {"mode": "hbm_only"}
+
+
 def _generate_macro_ops(
     model_config: Qwen3ModelConfig | LlamaModelConfig,
     nand_config: NandConfig,
@@ -179,7 +183,12 @@ def test_frontend_pipeline_macro_ops_run_on_xpu_simulator():
         inference_config,
         Qwen3DecoderLayer,
     )
-    result = run_macro_ops(nand_config, macro_op_list)
+    result = run_macro_ops(
+        nand_config,
+        macro_op_list,
+        hbf_sram_intermediate_buffer=True,
+        memory_architecture=_build_hbm_only_architecture(),
+    )
 
     assert result.cycle > 0
     assert result.time_ns > 0
@@ -218,7 +227,12 @@ def test_frontend_pipeline_llama_macro_ops_run_on_xpu_simulator():
         inference_config,
         LlamaDecoderLayer,
     )
-    result = run_macro_ops(nand_config, macro_op_list)
+    result = run_macro_ops(
+        nand_config,
+        macro_op_list,
+        hbf_sram_intermediate_buffer=True,
+        memory_architecture=_build_hbm_only_architecture(),
+    )
 
     assert result.cycle > 0
     assert result.time_ns > 0
