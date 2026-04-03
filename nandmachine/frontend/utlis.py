@@ -8,8 +8,10 @@ from nandmachine.config.cache_state import (
     InsufficientGPUMemoryError,
     KVCacheState,
 )
-from nandmachine.config.GPU_config.registry import get_device_or_raise
 from nandmachine.config.config import NandConfig
+from nandmachine.config.hbm_hbf_architecture import (
+    build_device_for_hbm_hbf_architecture_or_raise,
+)
 from nandmachine.config.inference_config import (
     DenseParallelConfig,
     InferenceConfig,
@@ -517,15 +519,23 @@ def _calculate_per_rank_qwen3_moe_full_model_kv_cache_bytes(
     )
 
 
+def _build_capacity_device_or_raise(device_name: str, memory_architecture: object):
+    return build_device_for_hbm_hbf_architecture_or_raise(
+        device_name,
+        memory_architecture,
+    )
+
+
 def _build_capacity_result(
     device_name: str,
+    memory_architecture: object,
     inference_config: InferenceConfig,
     parallelism: _DenseParallelism | _MoEParallelism,
     per_rank_weight_bytes: int,
     per_rank_kv_cache_bytes: int,
 ) -> BatchSizeCapacityResult:
-    device = get_device_or_raise(device_name)
-    per_rank_capacity_bytes = device.memory_capacity_bytes
+    device = _build_capacity_device_or_raise(device_name, memory_architecture)
+    per_rank_capacity_bytes = device.total_memory_capacity_bytes
     per_rank_used_bytes = per_rank_weight_bytes + per_rank_kv_cache_bytes
     per_rank_remaining_bytes = per_rank_capacity_bytes - per_rank_used_bytes
     total_capacity_bytes = per_rank_capacity_bytes * parallelism.num_ranks
@@ -658,6 +668,7 @@ def build_imbalanced_kv_cache_state(
 
 def validate_batch_size_or_raise(
     device_name: str,
+    memory_architecture: object,
     model_config: ModelConfigBase,
     inference_config: InferenceConfig,
 ) -> BatchSizeCapacityResult:
@@ -697,6 +708,7 @@ def validate_batch_size_or_raise(
 
     result = _build_capacity_result(
         device_name,
+        memory_architecture,
         inference_config,
         parallelism,
         per_rank_weight_bytes,
@@ -716,6 +728,7 @@ def validate_batch_size_or_raise(
 
 def calculate_max_batch_size(
     device_name: str,
+    memory_architecture: object,
     model_config: ModelConfigBase,
     inference_config: InferenceConfig,
 ) -> BatchSizeCapacityResult:
@@ -731,6 +744,7 @@ def calculate_max_batch_size(
         candidate_config = replace(inference_config, batch_size=batch_size)
         return validate_batch_size_or_raise(
             device_name=device_name,
+            memory_architecture=memory_architecture,
             model_config=model_config,
             inference_config=candidate_config,
         )

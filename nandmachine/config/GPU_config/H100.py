@@ -17,6 +17,10 @@ from nandmachine.config.GPU_config.schema import (
 
 # H100 SXM scalar parameters
 H100_SXM_MEMORY_CAPACITY_BYTES = 80 * 1024**3
+H100_HBM_STACK_COUNT = 5
+H100_HBM_STACK_BYTES = 16 * 1024**3
+H100_HBF_STACK_BYTES = 256 * 1024**3
+H100_MEMORY_BANDWIDTH_PER_STACK_BYTES_PER_SEC = 670e9
 H100_SXM_CORE_COUNT = 132
 H100_SXM_CLOCK_FREQ_HZ = 1.83e9
 H100_SXM_L2_SIZE_BYTES = 50 * 1024**2
@@ -87,8 +91,17 @@ H100_SXM_COMPUTE_MODULE_FP16 = ComputeModule(
 H100_SXM_IO_MODULE = IOModule(bandwidth=H100_SXM_IO_BW_BYTES_PER_SEC)
 H100_SXM_FP16 = Device(
     compute_module=H100_SXM_COMPUTE_MODULE_FP16,
-    io_module=H100_SXM_IO_MODULE,
+    io_module=IOModule(
+        bandwidth=H100_SXM_IO_BW_BYTES_PER_SEC,
+        hbm_bandwidth=H100_SXM_IO_BW_BYTES_PER_SEC,
+        hbf_bandwidth=0.0,
+    ),
     memory_capacity_bytes=H100_SXM_MEMORY_CAPACITY_BYTES,
+    hbm_memory_capacity_bytes=H100_SXM_MEMORY_CAPACITY_BYTES,
+    hbf_memory_capacity_bytes=0,
+    memory_architecture_mode="hbm_only",
+    hbm_stack_count=H100_HBM_STACK_COUNT,
+    hbf_stack_count=0,
 )
 
 H100_PCIE_VECTOR_UNIT_FP16 = VectorUnit(
@@ -120,11 +133,24 @@ H100_PCIE_COMPUTE_MODULE_FP16 = ComputeModule(
 H100_PCIE_IO_MODULE = IOModule(bandwidth=H100_PCIE_IO_BW_BYTES_PER_SEC)
 H100_PCIE_FP16 = Device(
     compute_module=H100_PCIE_COMPUTE_MODULE_FP16,
-    io_module=H100_PCIE_IO_MODULE,
+    io_module=IOModule(
+        bandwidth=H100_PCIE_IO_BW_BYTES_PER_SEC,
+        hbm_bandwidth=H100_PCIE_IO_BW_BYTES_PER_SEC,
+        hbf_bandwidth=0.0,
+    ),
     memory_capacity_bytes=H100_PCIE_MEMORY_CAPACITY_BYTES,
+    hbm_memory_capacity_bytes=H100_PCIE_MEMORY_CAPACITY_BYTES,
+    hbf_memory_capacity_bytes=0,
+    memory_architecture_mode="hbm_only",
+    hbm_stack_count=H100_HBM_STACK_COUNT,
+    hbf_stack_count=0,
 )
 
 __all__ = [
+    "H100_HBM_STACK_COUNT",
+    "H100_HBM_STACK_BYTES",
+    "H100_HBF_STACK_BYTES",
+    "H100_MEMORY_BANDWIDTH_PER_STACK_BYTES_PER_SEC",
     "H100_SXM_CORE_COUNT",
     "H100_SXM_MEMORY_CAPACITY_BYTES",
     "H100_SXM_CLOCK_FREQ_HZ",

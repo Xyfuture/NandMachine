@@ -19,6 +19,15 @@ from nandmachine.frontend.utlis import calculate_max_batch_size, validate_batch_
 
 
 MODEL_CARD_DIR = Path(__file__).resolve().parents[1] / "model_cards"
+HBM_ONLY_MEMORY_ARCHITECTURE = {"mode": "hbm_only"}
+
+
+def _cli_memory_architecture(hbm_stacks: int, hbf_stacks: int) -> dict[str, int | str]:
+    return {
+        "mode": "cli",
+        "hbm_stacks": hbm_stacks,
+        "hbf_stacks": hbf_stacks,
+    }
 
 
 def _make_inference_config(
@@ -45,6 +54,18 @@ def _make_inference_config(
 
 def _a100_capacity_bytes() -> int:
     return 80 * 1024**3
+
+
+def _h100_capacity_bytes(hbm_stacks: int, hbf_stacks: int) -> int:
+    return (hbm_stacks * 16 + hbf_stacks * 256) * 1024**3
+
+
+def _h200_hbm_stack_bytes() -> int:
+    return (47 * 1024**3) // 2
+
+
+def _h200_capacity_bytes(hbm_stacks: int, hbf_stacks: int) -> int:
+    return hbm_stacks * _h200_hbm_stack_bytes() + hbf_stacks * 256 * 1024**3
 
 
 def _make_qwen3_moe_model_config(**overrides) -> Qwen3MoEModelConfig:
@@ -89,6 +110,20 @@ def _load_qwen3_moe_235b_model_config() -> Qwen3MoEModelConfig:
     )
 
 
+def _make_capacity_scaling_model_config() -> Qwen3ModelConfig:
+    return Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        num_hidden_layers=36,
+        attention_bias=False,
+    )
+
+
 def test_validate_batch_size_qwen3_single_rank_counts_qk_norm_weights():
     model_config = Qwen3ModelConfig(
         hidden_size=1024,
@@ -106,7 +141,12 @@ def test_validate_batch_size_qwen3_single_rank_counts_qk_norm_weights():
         parallel_config=ParallelConfig(num_ranks=1),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1024 * ((8 + 2 * 2) * 128)
@@ -155,7 +195,12 @@ def test_validate_batch_size_llama_single_rank_excludes_qwen_qk_norm_weights():
         parallel_config=ParallelConfig(num_ranks=1),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1536 * ((12 + 2 * 3) * 128)
@@ -189,7 +234,12 @@ def test_validate_batch_size_mha_uses_attention_heads_for_qkv_weights():
         parallel_config=ParallelConfig(num_ranks=1),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1024 * ((8 + 2 * 8) * 128)
@@ -219,7 +269,12 @@ def test_validate_batch_size_dense_parallel_splits_weight_and_kv_per_rank():
         parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1024 * (((8 + 2 * 2) * 128) // 2)
@@ -261,7 +316,12 @@ def test_validate_batch_size_parallel_config_is_pure_dp():
         parallel_config=ParallelConfig(num_ranks=4),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     expected_rank_batch = (10 + 4 - 1) // 4
     per_layer_kv_values = expected_rank_batch * (8 + 4) * 2 * 128 * 2
@@ -291,7 +351,12 @@ def test_validate_batch_size_raises_for_insufficient_gpu_memory():
     )
 
     with pytest.raises(InsufficientGPUMemoryError):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_calculate_max_batch_size_returns_exact_dense_limit():
@@ -313,7 +378,12 @@ def test_calculate_max_batch_size_returns_exact_dense_limit():
         parallel_config=ParallelConfig(num_ranks=1),
     )
 
-    result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+    result = calculate_max_batch_size(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         4096 * ((32 + 2 * 8) * 128)
@@ -340,7 +410,12 @@ def test_calculate_max_batch_size_returns_exact_dense_limit():
         parallel_config=ParallelConfig(num_ranks=1),
     )
     with pytest.raises(InsufficientGPUMemoryError):
-        validate_batch_size_or_raise("A100_80GB", model_config, overflow_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            overflow_config,
+        )
 
 
 def test_calculate_max_batch_size_raises_when_batch_size_one_does_not_fit():
@@ -362,7 +437,12 @@ def test_calculate_max_batch_size_raises_when_batch_size_one_does_not_fit():
     )
 
     with pytest.raises(InsufficientGPUMemoryError):
-        calculate_max_batch_size("A100_80GB", model_config, inference_config)
+        calculate_max_batch_size(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_invalid_dense_parallel_product():
@@ -382,7 +462,12 @@ def test_validate_batch_size_rejects_invalid_dense_parallel_product():
     )
 
     with pytest.raises(ValueError, match="num_ranks == dp_size \\* tp_size"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_gqa_heads_not_divisible_by_tp():
@@ -403,7 +488,12 @@ def test_validate_batch_size_rejects_gqa_heads_not_divisible_by_tp():
     )
 
     with pytest.raises(ValueError, match="num_kv_heads=3 must be divisible by 2"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_mha_heads_not_divisible_by_tp():
@@ -424,7 +514,12 @@ def test_validate_batch_size_rejects_mha_heads_not_divisible_by_tp():
     )
 
     with pytest.raises(ValueError, match="num_kv_heads=7 must be divisible by 2"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_moe_parallel_config():
@@ -450,7 +545,12 @@ def test_validate_batch_size_rejects_moe_parallel_config():
     )
 
     with pytest.raises(NotImplementedError, match="MoEParallelConfig"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_qwen3_moe_single_rank_counts_router_and_expert_weights():
@@ -466,7 +566,12 @@ def test_validate_batch_size_qwen3_moe_single_rank_counts_router_and_expert_weig
         ),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1024 * ((8 + 2 * 2) * 128)
@@ -500,7 +605,12 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
         ),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         1024 * (((8 + 2 * 2) * 128) // 2)
@@ -553,7 +663,12 @@ def test_calculate_max_batch_size_returns_exact_qwen3_moe_limit():
         ),
     )
 
-    result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+    result = calculate_max_batch_size(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     per_layer_weight_params = (
         2048 * ((16 + 2 * 4) * 128)
@@ -588,7 +703,12 @@ def test_validate_batch_size_rejects_qwen3_moe_shared_expert():
     )
 
     with pytest.raises(NotImplementedError, match="shared expert"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_qwen3_moe_sparse_step_not_one():
@@ -605,7 +725,12 @@ def test_validate_batch_size_rejects_qwen3_moe_sparse_step_not_one():
     )
 
     with pytest.raises(NotImplementedError, match="decoder_sparse_step == 1"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_qwen3_moe_mlp_only_layers():
@@ -622,7 +747,12 @@ def test_validate_batch_size_rejects_qwen3_moe_mlp_only_layers():
     )
 
     with pytest.raises(NotImplementedError, match="empty mlp_only_layers"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_qwen3_8b_model_card_capacity_matches_expected_scale():
@@ -634,8 +764,18 @@ def test_qwen3_8b_model_card_capacity_matches_expected_scale():
         parallel_config=ParallelConfig(num_ranks=1),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
-    max_result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    max_result = calculate_max_batch_size(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     assert result.per_rank_weight_bytes == 13_892_143_104
     assert result.per_rank_kv_cache_bytes == 377_487_360
@@ -657,12 +797,357 @@ def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
         ),
     )
 
-    result = validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
-    max_result = calculate_max_batch_size("A100_80GB", model_config, inference_config)
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    max_result = calculate_max_batch_size(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
 
     assert result.per_rank_weight_bytes == 6_999_784_448
     assert result.per_rank_kv_cache_bytes == 123_207_680
     assert max_result.batch_size == 20_480
+
+
+def test_validate_batch_size_uses_h100_total_capacity_for_hbm_hbf_architectures():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    hbm_only_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    csi_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+    cli_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        _cli_memory_architecture(2, 3),
+        model_config,
+        inference_config,
+    )
+
+    assert hbm_only_result.per_rank_capacity_bytes == _h100_capacity_bytes(5, 0)
+    assert csi_result.per_rank_capacity_bytes == _h100_capacity_bytes(5, 5)
+    assert cli_result.per_rank_capacity_bytes == _h100_capacity_bytes(2, 3)
+
+
+def test_validate_batch_size_uses_h200_total_capacity_for_hbm_hbf_architectures():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    hbm_only_result = validate_batch_size_or_raise(
+        "H200_SXM",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    csi_result = validate_batch_size_or_raise(
+        "H200_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+    cli_result = validate_batch_size_or_raise(
+        "H200_SXM",
+        _cli_memory_architecture(3, 3),
+        model_config,
+        inference_config,
+    )
+
+    assert hbm_only_result.per_rank_capacity_bytes == _h200_capacity_bytes(6, 0)
+    assert csi_result.per_rank_capacity_bytes == _h200_capacity_bytes(6, 6)
+    assert cli_result.per_rank_capacity_bytes == _h200_capacity_bytes(3, 3)
+
+
+def test_validate_batch_size_architecture_only_changes_capacity_budget():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        7,
+        input_sequence_length=128,
+        output_sequence_length=32,
+        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
+    )
+
+    hbm_only_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    csi_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+    cli_result = validate_batch_size_or_raise(
+        "H100_SXM",
+        _cli_memory_architecture(2, 3),
+        model_config,
+        inference_config,
+    )
+
+    assert hbm_only_result.per_rank_weight_bytes == csi_result.per_rank_weight_bytes
+    assert csi_result.per_rank_weight_bytes == cli_result.per_rank_weight_bytes
+    assert hbm_only_result.per_rank_kv_cache_bytes == csi_result.per_rank_kv_cache_bytes
+    assert csi_result.per_rank_kv_cache_bytes == cli_result.per_rank_kv_cache_bytes
+    assert hbm_only_result.per_rank_capacity_bytes < csi_result.per_rank_capacity_bytes
+    assert cli_result.per_rank_capacity_bytes < csi_result.per_rank_capacity_bytes
+
+
+def test_validate_batch_size_reports_total_capacity_for_multi_rank_h100_csi():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        8,
+        input_sequence_length=128,
+        output_sequence_length=32,
+        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
+    )
+
+    result = validate_batch_size_or_raise(
+        "H100_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+
+    expected_per_rank_capacity_bytes = _h100_capacity_bytes(5, 5)
+    assert result.per_rank_capacity_bytes == expected_per_rank_capacity_bytes
+    assert result.total_capacity_bytes == expected_per_rank_capacity_bytes * 4
+    assert result.total_weight_bytes == result.per_rank_weight_bytes * 4
+    assert result.total_kv_cache_bytes == result.per_rank_kv_cache_bytes * 4
+
+
+def test_calculate_max_batch_size_scales_up_for_h100_csi():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    hbm_only_result = calculate_max_batch_size(
+        "H100_SXM",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    csi_result = calculate_max_batch_size(
+        "H100_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+
+    assert csi_result.batch_size > hbm_only_result.batch_size
+
+
+def test_calculate_max_batch_size_scales_up_for_h200_csi():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    hbm_only_result = calculate_max_batch_size(
+        "H200_SXM",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+    csi_result = calculate_max_batch_size(
+        "H200_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+
+    assert csi_result.batch_size > hbm_only_result.batch_size
+
+
+def test_calculate_max_batch_size_scales_with_h100_cli_total_capacity():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+    low_capacity_architecture = _cli_memory_architecture(4, 1)
+    mid_capacity_architecture = _cli_memory_architecture(2, 3)
+    high_capacity_architecture = _cli_memory_architecture(1, 4)
+
+    low_capacity_result = calculate_max_batch_size(
+        "H100_SXM",
+        low_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+    mid_capacity_result = calculate_max_batch_size(
+        "H100_SXM",
+        mid_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+    high_capacity_result = calculate_max_batch_size(
+        "H100_SXM",
+        high_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+
+    assert _h100_capacity_bytes(4, 1) < _h100_capacity_bytes(2, 3)
+    assert _h100_capacity_bytes(2, 3) < _h100_capacity_bytes(1, 4)
+    assert low_capacity_result.batch_size < mid_capacity_result.batch_size
+    assert mid_capacity_result.batch_size < high_capacity_result.batch_size
+
+
+def test_calculate_max_batch_size_scales_with_h200_cli_total_capacity():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+    low_capacity_architecture = _cli_memory_architecture(5, 1)
+    mid_capacity_architecture = _cli_memory_architecture(3, 3)
+    high_capacity_architecture = _cli_memory_architecture(1, 5)
+
+    low_capacity_result = calculate_max_batch_size(
+        "H200_SXM",
+        low_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+    mid_capacity_result = calculate_max_batch_size(
+        "H200_SXM",
+        mid_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+    high_capacity_result = calculate_max_batch_size(
+        "H200_SXM",
+        high_capacity_architecture,
+        model_config,
+        inference_config,
+    )
+
+    assert _h200_capacity_bytes(5, 1) < _h200_capacity_bytes(3, 3)
+    assert _h200_capacity_bytes(3, 3) < _h200_capacity_bytes(1, 5)
+    assert low_capacity_result.batch_size < mid_capacity_result.batch_size
+    assert mid_capacity_result.batch_size < high_capacity_result.batch_size
+
+
+def test_calculate_max_batch_size_h100_csi_overflow_candidate_raises():
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    max_result = calculate_max_batch_size(
+        "H100_SXM",
+        {"mode": "csi"},
+        model_config,
+        inference_config,
+    )
+    overflow_config = _make_inference_config(
+        max_result.batch_size + 1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    with pytest.raises(InsufficientGPUMemoryError):
+        validate_batch_size_or_raise(
+            "H100_SXM",
+            {"mode": "csi"},
+            model_config,
+            overflow_config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("device_name", "memory_architecture"),
+    [
+        ("A100_80GB", {"mode": "csi"}),
+        ("A100_80GB", _cli_memory_architecture(2, 3)),
+        ("H100_PCIE", {"mode": "csi"}),
+        ("H100_PCIE", _cli_memory_architecture(2, 3)),
+        ("H200_NVL", {"mode": "csi"}),
+        ("H200_NVL", _cli_memory_architecture(3, 3)),
+    ],
+)
+def test_validate_batch_size_rejects_unsupported_hbm_hbf_architecture(
+    device_name: str,
+    memory_architecture: dict[str, int | str],
+):
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    with pytest.raises(ValueError):
+        validate_batch_size_or_raise(
+            device_name,
+            memory_architecture,
+            model_config,
+            inference_config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("device_name", "memory_architecture"),
+    [
+        ("A100_80GB", {"mode": "csi"}),
+        ("H100_PCIE", _cli_memory_architecture(2, 3)),
+        ("H200_NVL", {"mode": "csi"}),
+    ],
+)
+def test_calculate_max_batch_size_rejects_unsupported_hbm_hbf_architecture(
+    device_name: str,
+    memory_architecture: dict[str, int | str],
+):
+    model_config = _make_capacity_scaling_model_config()
+    inference_config = _make_inference_config(
+        1,
+        input_sequence_length=2048,
+        output_sequence_length=512,
+        parallel_config=ParallelConfig(num_ranks=1),
+    )
+
+    with pytest.raises(ValueError):
+        calculate_max_batch_size(
+            device_name,
+            memory_architecture,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_rejects_mla_attention_type():
@@ -683,4 +1168,9 @@ def test_validate_batch_size_rejects_mla_attention_type():
     )
 
     with pytest.raises(NotImplementedError, match="MLA"):
-        validate_batch_size_or_raise("A100_80GB", model_config, inference_config)
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )

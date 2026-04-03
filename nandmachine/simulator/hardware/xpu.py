@@ -2,6 +2,8 @@ import math
 
 from Desim import SimModule, SimTime
 
+import nandmachine.simulator.software.flash_attention as flash_attention_module
+import nandmachine.simulator.software.matmul as matmul_module
 from nandmachine.commands.macro import (
     All2AllOp,
     AllGatherOp,
@@ -15,6 +17,9 @@ from nandmachine.commands.macro import (
     VectorOp,
 )
 from nandmachine.config.config import NandConfig
+from nandmachine.config.hbm_hbf_architecture import (
+    build_device_for_hbm_hbf_architecture_or_raise,
+)
 from nandmachine.config.hardware_config import Device, device_dict
 from nandmachine.config.interconnect_config import get_interconnect_for_device_or_raise
 from nandmachine.simulator.hardware.nand import NandController
@@ -30,6 +35,11 @@ from nandmachine.simulator.software.matmul import MatMul_Simulation
 
 
 TRANSFER_OP_TYPES = (AllReduceOp, AllGatherOp, ReduceScatterOp, All2AllOp)
+
+
+def _sync_hbf_sram_intermediate_buffer(enable: bool) -> None:
+    matmul_module.ENABLE_CLI_HBF_SRAM_BUFFER = enable
+    flash_attention_module.ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = enable
 
 
 def _cycle_count_to_time_ns(cycle_count: float, device: Device) -> int:
@@ -100,6 +110,8 @@ class ComputeEngine(SimModule):
         self,
         nand_config: NandConfig,
         *,
+        hbf_sram_intermediate_buffer: bool,
+        memory_architecture: dict[str, object],
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
     ):
@@ -112,10 +124,14 @@ class ComputeEngine(SimModule):
 
         self.config = nand_config
         self.device_name = device_name
-        if device_name not in device_dict:
-            raise ValueError(f"Unsupported device_name: {device_name}")
-        self.device: Device = device_dict[device_name]
+        self.hbf_sram_intermediate_buffer = hbf_sram_intermediate_buffer
+        self.memory_architecture = memory_architecture
+        self.device: Device = build_device_for_hbm_hbf_architecture_or_raise(
+            device_name,
+            memory_architecture,
+        )
         self.compile_mode = compile_mode
+        _sync_hbf_sram_intermediate_buffer(hbf_sram_intermediate_buffer)
 
         
         self.command_queue:list[DepSlot[MacroOp]] = []
@@ -277,7 +293,7 @@ class ComputeEngine(SimModule):
         return qk_cycles + softmax_cycles + sv_cycles
 
     def execute_macro_op(self,macro_op:MacroOp)->float:
-        
+        _sync_hbf_sram_intermediate_buffer(self.hbf_sram_intermediate_buffer)
 
         if isinstance(macro_op, MatMulOp):
             matmul_sim = MatMul_Simulation.get_instance(
@@ -466,6 +482,8 @@ class xPU(SimModule):
         self,
         nand_config: NandConfig,
         *,
+        hbf_sram_intermediate_buffer: bool,
+        memory_architecture: dict[str, object],
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
     ):
@@ -473,6 +491,8 @@ class xPU(SimModule):
 
         self.nand_config:NandConfig = nand_config
         self.device_name = device_name
+        self.hbf_sram_intermediate_buffer = hbf_sram_intermediate_buffer
+        self.memory_architecture = memory_architecture
         self.compile_mode = compile_mode
 
         # 在这里初始化 nand controller
@@ -482,6 +502,8 @@ class xPU(SimModule):
         # 异步执行的 engine
         self.compute_engine = ComputeEngine(
             self.nand_config,
+            hbf_sram_intermediate_buffer=hbf_sram_intermediate_buffer,
+            memory_architecture=memory_architecture,
             device_name=device_name,
             compile_mode=compile_mode,
         )
