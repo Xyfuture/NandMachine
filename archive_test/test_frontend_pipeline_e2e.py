@@ -12,6 +12,7 @@ from nandmachine.commands.macro import FlashAttnOp, MacroOp, MatMulOp, VectorOp
 from nandmachine.config.config import NandConfig
 from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig
 from nandmachine.config.model_config import LlamaModelConfig, Qwen3ModelConfig
+from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.frontend.core.graph.base import NxGraphMeta, NxTracer
 from nandmachine.frontend.core.passes.cod_gen import CodeGenPass
 from nandmachine.frontend.core.passes.normalize import NormalizePass
@@ -117,8 +118,8 @@ def _build_sim_inference_config() -> InferenceConfig:
     )
 
 
-def _build_hbm_only_architecture() -> dict[str, object]:
-    return {"mode": "hbm_only"}
+def _build_hbm_bandwidth_bytes_per_sec(device_name: str = "A100_80GB") -> float:
+    return get_device_or_raise(device_name).io_module.bandwidth
 
 
 def _generate_macro_ops(
@@ -186,8 +187,7 @@ def test_frontend_pipeline_macro_ops_run_on_xpu_simulator():
     result = run_macro_ops(
         nand_config,
         macro_op_list,
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=_build_hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=_build_hbm_bandwidth_bytes_per_sec(),
     )
 
     assert result.cycle > 0
@@ -230,8 +230,7 @@ def test_frontend_pipeline_llama_macro_ops_run_on_xpu_simulator():
     result = run_macro_ops(
         nand_config,
         macro_op_list,
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=_build_hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=_build_hbm_bandwidth_bytes_per_sec(),
     )
 
     assert result.cycle > 0

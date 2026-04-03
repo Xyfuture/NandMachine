@@ -12,6 +12,7 @@ SYSTOLIC_ARRAY_MODEL_DIR = os.path.join(
 )
 SYSTOLIC_TEMP_DIR = os.path.join(SYSTOLIC_ARRAY_MODEL_DIR, "temp")
 
+from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import Device
 from math import ceil, log2, floor
 import time
@@ -31,6 +32,15 @@ ReturnUnit = Literal["cycle", "time_ns"]
 ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = True
 
 
+@dataclass(frozen=True)
+class BandwidthConfigKey:
+    num_channels: int
+    num_plane: int
+    page_size_bytes: int
+    tRead: float
+    hbm_bandwidth_bytes_per_sec: float
+
+
 def _cycle_count_to_time_ns(cycle_count: int, pcb_module: Device) -> int:
     return ceil(cycle_count * 1e9 / pcb_module.compute_module.clock_freq)
 
@@ -44,32 +54,71 @@ def _word_size_from_weight_bits(weight_bits: int) -> int:
     return weight_bits // 8
 
 
+def _build_bandwidth_config_key_or_raise(
+    nand_config: NandConfig,
+    hbm_bandwidth_bytes_per_sec: float,
+) -> BandwidthConfigKey:
+    if nand_config.page_size_bytes <= 0:
+        raise ValueError(
+            f"nand_config.page_size_bytes must be > 0, got {nand_config.page_size_bytes}"
+        )
+    if nand_config.tRead <= 0:
+        raise ValueError(f"nand_config.tRead must be > 0, got {nand_config.tRead}")
+    if hbm_bandwidth_bytes_per_sec <= 0:
+        raise ValueError(
+            "hbm_bandwidth_bytes_per_sec must be > 0, "
+            f"got {hbm_bandwidth_bytes_per_sec}"
+        )
+    return BandwidthConfigKey(
+        num_channels=nand_config.num_channels,
+        num_plane=nand_config.num_plane,
+        page_size_bytes=nand_config.page_size_bytes,
+        tRead=nand_config.tRead,
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+    )
+
+
+def _get_hbf_bandwidth_bytes_per_sec_or_raise(
+    bandwidth_config_key: BandwidthConfigKey,
+) -> float:
+    hbf_bandwidth_bytes_per_sec = (
+        bandwidth_config_key.num_channels
+        * bandwidth_config_key.num_plane
+        * (bandwidth_config_key.page_size_bytes / bandwidth_config_key.tRead)
+        * 1e9
+    )
+    if hbf_bandwidth_bytes_per_sec <= 0:
+        raise ValueError(
+            "Derived hbf_bandwidth_bytes_per_sec must be > 0, "
+            f"got {hbf_bandwidth_bytes_per_sec}"
+        )
+    return hbf_bandwidth_bytes_per_sec
+
+
 def _get_main_memory_bandwidth_per_cycle_or_raise(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     bandwidth_type: Literal["total", "hbm", "hbf"],
 ) -> float:
     if bandwidth_type == "total":
-        bandwidth = pcb_module.io_module.total_bandwidth
+        bandwidth = (
+            bandwidth_config_key.hbm_bandwidth_bytes_per_sec
+            + _get_hbf_bandwidth_bytes_per_sec_or_raise(bandwidth_config_key)
+        )
     elif bandwidth_type == "hbm":
-        bandwidth = pcb_module.io_module.hbm_bandwidth
+        bandwidth = bandwidth_config_key.hbm_bandwidth_bytes_per_sec
     elif bandwidth_type == "hbf":
-        bandwidth = pcb_module.io_module.hbf_bandwidth
+        bandwidth = _get_hbf_bandwidth_bytes_per_sec_or_raise(bandwidth_config_key)
     else:
         raise ValueError(f"Unsupported bandwidth_type: {bandwidth_type}")
 
     if bandwidth <= 0:
-        raise ValueError(
-            f"{bandwidth_type}_bandwidth must be > 0 for "
-            f"memory_architecture_mode={pcb_module.memory_architecture_mode}, "
-            f"got {bandwidth}"
-        )
+        raise ValueError(f"{bandwidth_type}_bandwidth must be > 0, got {bandwidth}")
 
     bandwidth_per_cycle = bandwidth / pcb_module.compute_module.clock_freq
     if bandwidth_per_cycle <= 0:
         raise ValueError(
-            f"{bandwidth_type}_bandwidth_per_cycle must be > 0 for "
-            f"memory_architecture_mode={pcb_module.memory_architecture_mode}, "
-            f"got {bandwidth_per_cycle}"
+            f"{bandwidth_type}_bandwidth_per_cycle must be > 0, got {bandwidth_per_cycle}"
         )
     return bandwidth_per_cycle
 
@@ -85,9 +134,11 @@ def _bytes_to_cycle_count_or_raise(num_bytes: int, bandwidth_per_cycle: float) -
 def _simulate_default_main_memory_io_cycle_count(
     num_bytes: int,
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
 ) -> int:
     total_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         "total",
     )
     return _bytes_to_cycle_count_or_raise(num_bytes, total_bandwidth_per_cycle)
@@ -95,26 +146,24 @@ def _simulate_default_main_memory_io_cycle_count(
 
 def _simulate_flashattn_qk_cli_read_cycle_count(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     *,
     qk_mk_bytes: int,
     qk_kn_bytes: int,
 ) -> int:
-    if pcb_module.memory_architecture_mode != "cli":
-        raise ValueError(
-            "QK CLI main-memory read formula can only be used for CLI devices, "
-            f"got {pcb_module.memory_architecture_mode}"
-        )
-
     hbm_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         "hbm",
     )
     total_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         "total",
     )
     qk_kn_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         "hbf",
     )
 
@@ -146,17 +195,13 @@ def _simulate_flashattn_qk_cli_read_cycle_count(
 
 def _simulate_flashattn_sv_cli_read_cycle_count(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     *,
     sv_nk_bytes: int,
 ) -> int:
-    if pcb_module.memory_architecture_mode != "cli":
-        raise ValueError(
-            "SV CLI main-memory read formula can only be used for CLI devices, "
-            f"got {pcb_module.memory_architecture_mode}"
-        )
-
     sv_nk_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         "hbf",
     )
     return _bytes_to_cycle_count_or_raise(sv_nk_bytes, sv_nk_bandwidth_per_cycle)
@@ -164,20 +209,16 @@ def _simulate_flashattn_sv_cli_read_cycle_count(
 
 def _simulate_flashattn_sv_cli_write_cycle_count(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     *,
     sv_mk_bytes: int,
 ) -> int:
-    if pcb_module.memory_architecture_mode != "cli":
-        raise ValueError(
-            "SV CLI main-memory write formula can only be used for CLI devices, "
-            f"got {pcb_module.memory_architecture_mode}"
-        )
-
     sv_mk_bandwidth_type: Literal["total", "hbm"] = (
         "total" if ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER else "hbm"
     )
     sv_mk_bandwidth_per_cycle = _get_main_memory_bandwidth_per_cycle_or_raise(
         pcb_module,
+        bandwidth_config_key,
         sv_mk_bandwidth_type,
     )
     return _bytes_to_cycle_count_or_raise(sv_mk_bytes, sv_mk_bandwidth_per_cycle)
@@ -185,6 +226,7 @@ def _simulate_flashattn_sv_cli_write_cycle_count(
 
 def _simulate_flashattn_main_memory_read_cycle_count(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     *,
     matmul_type: MatmulType,
     qk_mk_or_sv_mk_bytes: int,
@@ -193,27 +235,24 @@ def _simulate_flashattn_main_memory_read_cycle_count(
     if matmul_type not in ("QK", "SV"):
         raise ValueError(f"Unsupported matmul_type: {matmul_type}")
 
-    if pcb_module.memory_architecture_mode != "cli":
-        return _simulate_default_main_memory_io_cycle_count(
-            qk_mk_or_sv_mk_bytes + qk_kn_or_sv_nk_bytes,
-            pcb_module,
-        )
-
     if matmul_type == "QK":
         return _simulate_flashattn_qk_cli_read_cycle_count(
             pcb_module,
+            bandwidth_config_key,
             qk_mk_bytes=qk_mk_or_sv_mk_bytes,
             qk_kn_bytes=qk_kn_or_sv_nk_bytes,
         )
 
     return _simulate_flashattn_sv_cli_read_cycle_count(
         pcb_module,
+        bandwidth_config_key,
         sv_nk_bytes=qk_kn_or_sv_nk_bytes,
     )
 
 
 def _simulate_flashattn_main_memory_write_cycle_count(
     pcb_module: Device,
+    bandwidth_config_key: BandwidthConfigKey,
     *,
     matmul_type: MatmulType,
     sv_mk_bytes: int,
@@ -224,11 +263,9 @@ def _simulate_flashattn_main_memory_write_cycle_count(
     if matmul_type == "QK" or sv_mk_bytes == 0:
         return 0
 
-    if pcb_module.memory_architecture_mode != "cli":
-        return _simulate_default_main_memory_io_cycle_count(sv_mk_bytes, pcb_module)
-
     return _simulate_flashattn_sv_cli_write_cycle_count(
         pcb_module,
+        bandwidth_config_key,
         sv_mk_bytes=sv_mk_bytes,
     )
 
@@ -286,17 +323,18 @@ class FlashAttn_BatchedMatMul_Simulation:
     def _compile_and_simulate_result(
         self,
         pcb_module: Device,
+        bandwidth_config_key: BandwidthConfigKey,
         compile_mode: str = "exhaustive",
     ) -> "FlashAttn_BatchedMatMul_Simulation.CompileResult":
         matmul = MatMul_Simulation(
             self.M, self.K, self.N, self.weight_bits, self.matmul_type
         )
         matmul_cycle_count1 = (
-            matmul.compile_and_simulate(
-                pcb_module,
-                compile_mode,
-                return_unit="cycle",
-            )
+            matmul._build_compile_result(
+                pcb_module=pcb_module,
+                bandwidth_config_key=bandwidth_config_key,
+                compile_mode=compile_mode,
+            ).best_cycle_count
             * self.B
         ) # 方案A：每个batch单独计算，完全流水化，理想情况下latency是单个batch的计算时间乘以batch size。matmul_latency1 = bs * latency of MatMul_Simulation(M,K,N)
 
@@ -308,17 +346,18 @@ class FlashAttn_BatchedMatMul_Simulation:
         elif self.matmul_type == "SV":
             output_write_cycle_count = _simulate_flashattn_main_memory_write_cycle_count(
                 pcb_module,
+                bandwidth_config_key,
                 matmul_type="SV",
                 sv_mk_bytes=(self.B - 1) * self.M * self.N * self.word_size,
             ) # SV需要写回
         else:
             raise ValueError(f"Unsupported matmul_type: {self.matmul_type}")
         matmul_cycle_count2 = (
-            matmul.compile_and_simulate(
-                pcb_module,
-                compile_mode,
-                return_unit="cycle",
-            )
+            matmul._build_compile_result(
+                pcb_module=pcb_module,
+                bandwidth_config_key=bandwidth_config_key,
+                compile_mode=compile_mode,
+            ).best_cycle_count
             + output_write_cycle_count
         ) # 方案B：把batch维度和K维度合并成一个大矩阵，计算一次得到所有batch的结果，计算时间是单次大矩阵乘法的时间加上把结果写回内存的时间（因为结果更大了，所以写回时间也增加了）。latency of MatMul_Simulation(M, K*bs, N) + IO time of writing output (M*N*bs elements) back to memory
         if matmul_cycle_count1 <= matmul_cycle_count2:
@@ -335,11 +374,18 @@ class FlashAttn_BatchedMatMul_Simulation:
 
     def compile_and_simulate(self,
         pcb_module: Device,
+        nand_config: NandConfig,
+        hbm_bandwidth_bytes_per_sec: float,
         compile_mode: str = "exhaustive",
         return_unit: ReturnUnit = "cycle",
     ) -> int:
+        bandwidth_config_key = _build_bandwidth_config_key_or_raise(
+            nand_config,
+            hbm_bandwidth_bytes_per_sec,
+        )
         result = self._compile_and_simulate_result(
             pcb_module=pcb_module,
+            bandwidth_config_key=bandwidth_config_key,
             compile_mode=compile_mode,
         )
         self.best_mapping = result.best_mapping
@@ -514,6 +560,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
     def _build_compile_result(
         self,
         pcb_module: Device,
+        bandwidth_config_key: BandwidthConfigKey,
         compile_mode: str = "exhaustive",
     ) -> "MatMul_Simulation.CompileResult":
         # 搜索最优mapping对应最小cycle
@@ -536,41 +583,32 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 total_flop_count / effective_total_vector_flops_per_cycle
             )
 
-            if pcb_module.memory_architecture_mode == "cli":
-                if self.matmul_type == "QK":
-                    io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
-                        pcb_module,
-                        matmul_type="QK",
-                        qk_mk_or_sv_mk_bytes=M * K * self.word_size,
-                        qk_kn_or_sv_nk_bytes=K * N * self.word_size,
-                    )
-                elif self.matmul_type == "SV":
-                    io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
-                        pcb_module,
-                        matmul_type="SV",
-                        qk_mk_or_sv_mk_bytes=0,
-                        qk_kn_or_sv_nk_bytes=K * N * self.word_size,
-                    ) + _simulate_flashattn_main_memory_write_cycle_count(
-                        pcb_module,
-                        matmul_type="SV",
-                        sv_mk_bytes=M * N * self.word_size,
-                    )
-                else:
-                    raise ValueError(
-                        f"Unsupported matmul_type: {self.matmul_type}"
-                    )
-                best_cycle_count = ceil(max(compute_cycle_count, io_cycle_count))
+            if self.matmul_type == "QK":
+                io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
+                    pcb_module,
+                    bandwidth_config_key,
+                    matmul_type="QK",
+                    qk_mk_or_sv_mk_bytes=M * K * self.word_size,
+                    qk_kn_or_sv_nk_bytes=K * N * self.word_size,
+                )
+            elif self.matmul_type == "SV":
+                io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
+                    pcb_module,
+                    bandwidth_config_key,
+                    matmul_type="SV",
+                    qk_mk_or_sv_mk_bytes=0,
+                    qk_kn_or_sv_nk_bytes=K * N * self.word_size,
+                ) + _simulate_flashattn_main_memory_write_cycle_count(
+                    pcb_module,
+                    bandwidth_config_key,
+                    matmul_type="SV",
+                    sv_mk_bytes=M * N * self.word_size,
+                )
             else:
-                working_set_size = M * K + N * K + M * N
-                total_io_count = working_set_size * self.word_size
-                io_latency = total_io_count / pcb_module.io_module.bandwidth
-                compute_latency = (
-                    compute_cycle_count / pcb_module.compute_module.clock_freq
+                raise ValueError(
+                    f"Unsupported matmul_type: {self.matmul_type}"
                 )
-                best_cycle_count = ceil(
-                    max(compute_latency, io_latency)
-                    * pcb_module.compute_module.clock_freq
-                )
+            best_cycle_count = ceil(max(compute_cycle_count, io_cycle_count))
             return self.CompileResult(
                 best_mapping=None,
                 best_cycle_count=best_cycle_count,
@@ -651,6 +689,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                                                     self.computational_graph,
                                                     mapping,
                                                     pcb_module,
+                                                    bandwidth_config_key,
                                                 )
                                                 if cycle_count < min_cycle_count:
                                                     min_cycle_count = cycle_count
@@ -760,6 +799,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                                 self.computational_graph,
                                 mapping,
                                 pcb_module,
+                                bandwidth_config_key,
                             )
                             # end = time.time()
                             # if i % 1000 == 0:
@@ -852,6 +892,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                                         self.computational_graph,
                                         mapping,
                                         pcb_module,
+                                        bandwidth_config_key,
                                     )
                                     end = time.time()
                                     # if i % 1000 == 0:
@@ -871,11 +912,18 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
     def compile_and_simulate(
         self,
         pcb_module: Device,
+        nand_config: NandConfig,
+        hbm_bandwidth_bytes_per_sec: float,
         compile_mode: str = "exhaustive",
         return_unit: ReturnUnit = "cycle",
     ) -> int:
+        bandwidth_config_key = _build_bandwidth_config_key_or_raise(
+            nand_config,
+            hbm_bandwidth_bytes_per_sec,
+        )
         result = self._build_compile_result(
             pcb_module=pcb_module,
+            bandwidth_config_key=bandwidth_config_key,
             compile_mode=compile_mode,
         )
         self.best_mapping = result.best_mapping
@@ -894,6 +942,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
         computational_graph: ComputationalGraph,
         mapping: Mapping,
         pcb_module: Device,
+        bandwidth_config_key: BandwidthConfigKey,
     ) -> int: # 注解，表明返回值是int
         if self.look_up_table is None: # None表示表格未加载，需要初始化读取表格
             # 懒加载脉动阵列查找表
@@ -985,6 +1034,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             ) # 该切片（数组的子块）中的每个元素都变成一个 L2TileSimulator 实例（同一组参数）
         if M_remain != 0:
@@ -995,6 +1045,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if N_remain != 0:
@@ -1005,6 +1056,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if K_remain != 0:
@@ -1015,6 +1067,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if M_remain * N_remain != 0:
@@ -1025,6 +1078,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if M_remain * K_remain != 0:
@@ -1035,6 +1089,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if N_remain * K_remain != 0:
@@ -1045,6 +1100,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
         if M_remain * N_remain * K_remain != 0:
@@ -1055,6 +1111,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 precision,
                 mapping,
                 pcb_module,
+                bandwidth_config_key,
                 self.look_up_table,
             )
 
@@ -1145,6 +1202,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             precision: "MatMul_Simulation.PrecisionContext",
             mapping: "MatMul_Simulation.Mapping",
             pcb_module: Device,
+            bandwidth_config_key: BandwidthConfigKey,
             look_up_table: pd.DataFrame,
         ):
             # print(f'L2 tile: {M} {N} {K}')
@@ -1154,6 +1212,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             self.K = K
             self.precision = precision
             self.device = pcb_module
+            self.bandwidth_config_key = bandwidth_config_key
             self.matmul_type = mapping.matmul_type
             word_size = precision.word_size
             effective_total_vector_flops_per_cycle = (
@@ -1180,6 +1239,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
         ) -> int:
             return _simulate_flashattn_main_memory_read_cycle_count(
                 self.device,
+                self.bandwidth_config_key,
                 matmul_type=self.matmul_type,
                 qk_mk_or_sv_mk_bytes=self.qk_mk_read_bytes if read_qk_mk else 0,
                 qk_kn_or_sv_nk_bytes=(
@@ -1194,6 +1254,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
         ) -> int:
             return _simulate_flashattn_main_memory_write_cycle_count(
                 self.device,
+                self.bandwidth_config_key,
                 matmul_type=self.matmul_type,
                 sv_mk_bytes=self.sv_mk_write_bytes if write_sv_mk else 0,
             )

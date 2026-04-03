@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Optional
+
 from Desim import SimModule, SimTime
+from perf_tracer import PerfettoTracer
+from perf_tracer.tracer import TrackInfo
 
 from nandmachine.commands.macro import (
     FlashAttnOp,
@@ -15,15 +20,26 @@ from nandmachine.simulator.hardware.xpu import (
     ComputeEngine,
     TRANSFER_OP_TYPES,
     TransferEngine,
+    _get_current_sim_cycle,
     _normalize_time_ns,
+    _record_macro_op_trace,
+    _validate_trace_binding,
     xPU,
 )
 
 
 class VallinaPrefetchEngine(SimModule):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        tracer: Optional[PerfettoTracer] = None,
+        trace_track: Optional[TrackInfo] = None,
+    ):
         super().__init__()
 
+        self.tracer = tracer
+        self.trace_track = trace_track
+        _validate_trace_binding(self.tracer, self.trace_track, self.__class__.__name__)
         self.prefetch_command_queue: list[DepSlot[MacroOp]] = []
         self.release_command_queue: list[DepSlot[MacroOp]] = []
 
@@ -37,7 +53,17 @@ class VallinaPrefetchEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
 
+            start_time_ns = _get_current_sim_cycle()
             SimModule.wait_time(SimTime(1))
+            end_time_ns = _get_current_sim_cycle()
+            _record_macro_op_trace(
+                self.tracer,
+                self.trace_track,
+                macro_op_slot.payload,
+                start_time_ns,
+                end_time_ns,
+                "prefetch",
+            )
             macro_op_slot.is_finished = True
             macro_op_slot.finish_event.notify(SimTime(1))
 
@@ -69,25 +95,61 @@ class VallinaXPU(xPU):
         self,
         nand_config: NandConfig,
         *,
+        hbm_bandwidth_bytes_per_sec: float,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        enable_trace: bool = False,
     ):
         SimModule.__init__(self)
 
         self.nand_config = nand_config
+        self.hbm_bandwidth_bytes_per_sec = hbm_bandwidth_bytes_per_sec
         self.device_name = device_name
         self.compile_mode = compile_mode
+        self.enable_trace = enable_trace
+
+        self.tracer: Optional[PerfettoTracer] = None
+        self.trace_module_name: Optional[str] = None
+        self.prefetch_trace_track: Optional[TrackInfo] = None
+        self.compute_trace_track: Optional[TrackInfo] = None
+        self.transfer_trace_track: Optional[TrackInfo] = None
+
+        if self.enable_trace:
+            self.tracer = PerfettoTracer(ns_per_cycle=1.0)
+            self.trace_module_name = f"{self.__class__.__name__}:{id(self)}"
+            trace_module = self.tracer.register_module(self.trace_module_name)
+            self.prefetch_trace_track = self.tracer.register_track("prefetch_engine", trace_module)
+            self.compute_trace_track = self.tracer.register_track("compute_engine", trace_module)
+            self.transfer_trace_track = self.tracer.register_track("transfer_engine", trace_module)
 
         self.compute_engine = VallinaComputeEngine(
             self.nand_config,
+            hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
             device_name=device_name,
             compile_mode=compile_mode,
+            tracer=self.tracer,
+            trace_track=self.compute_trace_track,
         )
         self.transfer_engine = TransferEngine(
             device_name=device_name,
             compile_mode=compile_mode,
+            tracer=self.tracer,
+            trace_track=self.transfer_trace_track,
         )
-        self.prefetch_engine = VallinaPrefetchEngine()
+        self.prefetch_engine = VallinaPrefetchEngine(
+            tracer=self.tracer,
+            trace_track=self.prefetch_trace_track,
+        )
+
+    def save_trace_file(self, file_name: str) -> str:
+        if self.tracer is None:
+            raise RuntimeError("Tracing is disabled on this xPU instance")
+        if not file_name:
+            raise ValueError("file_name must be a non-empty string")
+
+        output_path = Path(file_name)
+        self.tracer.save(str(output_path))
+        return str(output_path)
 
     def load_command(self, command_list: list[MacroOp]):
         prefetch_engine_slot_list: list[DepSlot[MacroOp]] = []

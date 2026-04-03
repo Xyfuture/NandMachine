@@ -6,8 +6,6 @@ from Desim import SimModule, SimSession, SimTime
 from perf_tracer import PerfettoTracer
 from perf_tracer.tracer import TrackInfo
 
-import nandmachine.simulator.software.flash_attention as flash_attention_module
-import nandmachine.simulator.software.matmul as matmul_module
 from nandmachine.commands.macro import (
     All2AllOp,
     AllGatherOp,
@@ -21,10 +19,7 @@ from nandmachine.commands.macro import (
     VectorOp,
 )
 from nandmachine.config.config import NandConfig
-from nandmachine.config.hbm_hbf_architecture import (
-    build_device_for_hbm_hbf_architecture_or_raise,
-)
-from nandmachine.config.hardware_config import Device, device_dict
+from nandmachine.config.hardware_config import Device, device_dict, get_device_or_raise
 from nandmachine.config.interconnect_config import get_interconnect_for_device_or_raise
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
@@ -134,11 +129,6 @@ def _record_macro_op_trace(
     )
 
 
-def _sync_hbf_sram_intermediate_buffer(enable: bool) -> None:
-    matmul_module.ENABLE_CLI_HBF_SRAM_BUFFER = enable
-    flash_attention_module.ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = enable
-
-
 def _cycle_count_to_time_ns(cycle_count: float, device: Device) -> int:
     if not math.isfinite(cycle_count) or cycle_count <= 0:
         raise ValueError(f"cycle_count must be finite and > 0, got {cycle_count}")
@@ -226,8 +216,7 @@ class ComputeEngine(SimModule):
         self,
         nand_config: NandConfig,
         *,
-        hbf_sram_intermediate_buffer: bool,
-        memory_architecture: dict[str, object],
+        hbm_bandwidth_bytes_per_sec: float,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
         tracer: Optional[PerfettoTracer] = None,
@@ -241,18 +230,13 @@ class ComputeEngine(SimModule):
         # max（计算时间， 访存时间）
 
         self.config = nand_config
+        self.hbm_bandwidth_bytes_per_sec = hbm_bandwidth_bytes_per_sec
         self.device_name = device_name
-        self.hbf_sram_intermediate_buffer = hbf_sram_intermediate_buffer
-        self.memory_architecture = memory_architecture
-        self.device: Device = build_device_for_hbm_hbf_architecture_or_raise(
-            device_name,
-            memory_architecture,
-        )
+        self.device: Device = get_device_or_raise(device_name)
         self.compile_mode = compile_mode
         self.tracer = tracer
         self.trace_track = trace_track
         _validate_trace_binding(self.tracer, self.trace_track, self.__class__.__name__)
-        _sync_hbf_sram_intermediate_buffer(hbf_sram_intermediate_buffer)
 
         
         self.command_queue:list[DepSlot[MacroOp]] = []
@@ -371,61 +355,7 @@ class ComputeEngine(SimModule):
             )
         return weight_bits // 8
 
-    def _estimate_matmul_cycles(self, macro_op: MatMulOp) -> float:
-        m, k, n = macro_op.shape
-        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
-        array = self.device.compute_module.core.systolic_array
-        mac_per_cycle = array.get_mac_per_cycle(macro_op.weight_bits)
-        systolic_flops_per_cycle = (
-            array.array_height
-            * array.array_width
-            * mac_per_cycle
-            * 2
-            * self.device.compute_module.core.systolic_array_count
-            * self.device.compute_module.core_count
-        )
-        io_bandwidth_per_cycle = (
-            self.device.io_module.bandwidth / self.device.compute_module.clock_freq
-        )
-
-        total_flops = 2 * m * k * n
-        io_bytes = (m * k + k * n + m * n) * bytes_per_value
-
-        compute_cycles = total_flops / systolic_flops_per_cycle
-        io_cycles = io_bytes / io_bandwidth_per_cycle
-        return max(1.0, compute_cycles, io_cycles)
-
-    def _estimate_flashattn_cycles(self, macro_op: FlashAttnOp) -> float:
-        qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
-        _, _, _, sv_k = macro_op.sv_bmm_input_shape
-        softmax_m, softmax_n = macro_op.softmax_input_shape
-        bytes_per_value = self._bytes_per_value(macro_op.weight_bits)
-        vector_flops_per_cycle = self.device.compute_module.get_total_vector_flops_per_cycle(
-            macro_op.weight_bits
-        )
-        exp_flops = self.device.compute_module.core.vector_unit.flops_per_exp
-        io_bandwidth_per_cycle = (
-            self.device.io_module.bandwidth / self.device.compute_module.clock_freq
-        )
-
-        qk_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_k, qk_n), weight_bits=macro_op.weight_bits)
-        )
-        sv_cycles = self._estimate_matmul_cycles(
-            MatMulOp(dim=(qk_b * qk_m, qk_n, sv_k), weight_bits=macro_op.weight_bits)
-        )
-
-        softmax_flops = softmax_m * softmax_n * (exp_flops + 4)
-        softmax_io_bytes = softmax_m * softmax_n * bytes_per_value * 2
-        softmax_compute_cycles = softmax_flops / vector_flops_per_cycle
-        softmax_io_cycles = softmax_io_bytes / io_bandwidth_per_cycle
-        softmax_cycles = max(1.0, softmax_compute_cycles, softmax_io_cycles)
-
-        return qk_cycles + softmax_cycles + sv_cycles
-
     def execute_macro_op(self,macro_op:MacroOp)->float:
-        _sync_hbf_sram_intermediate_buffer(self.hbf_sram_intermediate_buffer)
-
         if isinstance(macro_op, MatMulOp):
             matmul_sim = MatMul_Simulation.get_instance(
                 dim=macro_op.shape,
@@ -433,6 +363,8 @@ class ComputeEngine(SimModule):
             )
             matmul_time_ns = matmul_sim.compile_and_simulate(
                 pcb_module=self.device,
+                nand_config=self.config,
+                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
                 compile_mode=self.compile_mode,
                 return_unit="time_ns",
             )
@@ -448,6 +380,8 @@ class ComputeEngine(SimModule):
             )
             qk_bmm_time_ns = qk_bmm_sim.compile_and_simulate(
                 pcb_module=self.device,
+                nand_config=self.config,
+                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
                 compile_mode=self.compile_mode,
                 return_unit="time_ns",
             )
@@ -468,6 +402,8 @@ class ComputeEngine(SimModule):
             )
             sv_bmm_time_ns = sv_bmm_sim.compile_and_simulate(
                 pcb_module=self.device,
+                nand_config=self.config,
+                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
                 compile_mode=self.compile_mode,
                 return_unit="time_ns",
             )
@@ -627,9 +563,7 @@ class xPU(SimModule):
     def __init__(
         self,
         nand_config: NandConfig,
-        *,
-        hbf_sram_intermediate_buffer: bool,
-        memory_architecture: dict[str, object],
+        hbm_bandwidth_bytes_per_sec: float,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
         enable_trace: bool = False,
@@ -637,9 +571,8 @@ class xPU(SimModule):
         super().__init__()
 
         self.nand_config:NandConfig = nand_config
+        self.hbm_bandwidth_bytes_per_sec = hbm_bandwidth_bytes_per_sec
         self.device_name = device_name
-        self.hbf_sram_intermediate_buffer = hbf_sram_intermediate_buffer
-        self.memory_architecture = memory_architecture
         self.compile_mode = compile_mode
         self.enable_trace = enable_trace
 
@@ -664,8 +597,7 @@ class xPU(SimModule):
         # 异步执行的 engine
         self.compute_engine = ComputeEngine(
             self.nand_config,
-            hbf_sram_intermediate_buffer=hbf_sram_intermediate_buffer,
-            memory_architecture=memory_architecture,
+            hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
             device_name=device_name,
             compile_mode=compile_mode,
             tracer=self.tracer,

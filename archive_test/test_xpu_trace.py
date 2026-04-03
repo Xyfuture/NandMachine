@@ -5,6 +5,7 @@ from Desim import SimSession, SimTime
 
 from nandmachine.commands.macro import All2AllOp, SramPrefetch, VectorOp
 from nandmachine.config.config import NandConfig
+from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.simulator.hardware.vallina_xpu import VallinaXPU
 from nandmachine.simulator.hardware.xpu import xPU
 
@@ -23,8 +24,8 @@ def make_config() -> NandConfig:
     )
 
 
-def hbm_only_architecture() -> dict[str, object]:
-    return {"mode": "hbm_only"}
+def hbm_bandwidth_bytes_per_sec(device_name: str = "A100_80GB") -> float:
+    return get_device_or_raise(device_name).io_module.bandwidth
 
 
 def test_xpu_trace_records_all_three_engines_and_saves_file(tmp_path, monkeypatch):
@@ -37,8 +38,7 @@ def test_xpu_trace_records_all_three_engines_and_saves_file(tmp_path, monkeypatc
 
     sim_xpu = xPU(
         make_config(),
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
         enable_trace=True,
     )
     sim_xpu.load_command([vector_norm, prefetch, transfer])
@@ -97,8 +97,7 @@ def test_xpu_save_trace_file_requires_enabled_tracing():
 
     sim_xpu = xPU(
         make_config(),
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
         enable_trace=False,
     )
 
@@ -116,7 +115,11 @@ def test_vallina_xpu_trace_uses_same_save_interface(tmp_path, monkeypatch):
     vector_norm = VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)
     prefetch = SramPrefetch(num_prefetch_pages=1).with_inputs(vector_norm)
 
-    sim_xpu = VallinaXPU(make_config(), enable_trace=True)
+    sim_xpu = VallinaXPU(
+        make_config(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
+        enable_trace=True,
+    )
     sim_xpu.load_command([vector_norm, prefetch])
 
     monkeypatch.setattr(sim_xpu.compute_engine, "execute_macro_op", lambda macro_op: 2.0)

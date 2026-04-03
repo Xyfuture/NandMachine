@@ -33,12 +33,8 @@ def make_config() -> NandConfig:
     )
 
 
-def hbm_only_architecture() -> dict[str, object]:
-    return {"mode": "hbm_only"}
-
-
-def h100_cli_architecture() -> dict[str, object]:
-    return {"mode": "cli", "hbm_stacks": 2, "hbf_stacks": 3}
+def make_hbm_bandwidth_bytes_per_sec(device_name: str = "A100_80GB") -> float:
+    return get_device_or_raise(device_name).io_module.bandwidth
 
 
 def test_xpu_instances_keep_their_own_compute_settings():
@@ -49,14 +45,12 @@ def test_xpu_instances_keep_their_own_compute_settings():
 
     fast_xpu = xPU(
         config,
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec(),
         compile_mode="heuristic-GPU",
     )
     throughput_xpu = xPU(
         config,
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec(),
         compile_mode="heuristic-our-throughput",
     )
 
@@ -80,8 +74,7 @@ def test_xpu_routes_transfer_ops_to_transfer_engine():
 
     sim_xpu = xPU(
         config,
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec(),
     )
     sim_xpu.load_command([prefetch, transfer, matmul])
 
@@ -131,8 +124,7 @@ def test_hw_pipeline_flow_runs_with_current_macro_ops():
             flash_attn,
             release,
         ],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec(),
     )
 
     assert result.cycle > 0
@@ -162,8 +154,7 @@ def test_hw_pipeline_flow_runs_without_prefetch_or_release():
             vector_act,
             flash_attn,
         ],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec(),
     )
 
     assert result.cycle > 0
@@ -176,8 +167,7 @@ def test_h100_heuristic_gpu_runs_large_output_matmul_without_asserting():
     result = run_macro_ops(
         config,
         [MatMulOp(dim=(2, 4096, 9216), weight_bits=16)],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec("H100_SXM"),
         device_name="H100_SXM",
         compile_mode="heuristic-GPU",
     )
@@ -206,8 +196,7 @@ def test_hw_pipeline_flow_runs_with_moe_vector_ops_on_h100():
     result = run_macro_ops(
         config,
         [router, dispatch, expert, combine, weighted_sum],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec("H100_SXM"),
         device_name="H100_SXM",
         compile_mode="heuristic-GPU",
     )
@@ -222,8 +211,7 @@ def test_run_macro_ops_returns_cycle_and_time_ns_for_a100():
     result = run_macro_ops(
         config,
         [VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec("A100_80GB"),
         device_name="A100_80GB",
         compile_mode="heuristic-GPU",
     )
@@ -243,8 +231,7 @@ def test_run_macro_ops_returns_cycle_and_time_ns_for_h100():
     result = run_macro_ops(
         config,
         [VectorOp(vector_op_type="rms_norm", vector_shape=[2, 16], weight_bits=16)],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=hbm_only_architecture(),
+        hbm_bandwidth_bytes_per_sec=make_hbm_bandwidth_bytes_per_sec("H100_SXM"),
         device_name="H100_SXM",
         compile_mode="heuristic-GPU",
     )
@@ -285,17 +272,17 @@ def test_notebook_entrypoints_use_macro_sim_result_and_drop_weight_bits():
         assert run_cells
         assert all("\"weight_bits\"" not in cell for cell in simulator_config_cells)
         assert all(
-            "\"hbf_sram_intermediate_buffer\": True" in cell
+            "\"hbf_sram_intermediate_buffer\"" not in cell
             for cell in simulator_config_cells
         )
         assert all(
-            "\"memory_architecture\": simulator_config[\"memory_architecture\"]"
+            "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_bytes_per_sec\"]"
             in cell
             for cell in runtime_simulator_config_cells
         )
+        assert all("\"memory_architecture\"" not in cell for cell in simulator_config_cells)
         assert all(
-            "\"hbf_sram_intermediate_buffer\": simulator_config[\"hbf_sram_intermediate_buffer\"]"
-            in cell
+            "\"hbf_sram_intermediate_buffer\"" not in cell
             for cell in runtime_simulator_config_cells
         )
         assert all("sim_result = run_macro_ops(" in cell for cell in run_cells)
@@ -303,7 +290,7 @@ def test_notebook_entrypoints_use_macro_sim_result_and_drop_weight_bits():
         assert all("sim_result.time_ns" in cell for cell in run_cells)
 
 
-def test_hw_pipeline_notebook_passes_raw_memory_architecture_to_xpu():
+def test_hw_pipeline_notebook_passes_hbm_bandwidth_to_xpu():
     repo_root = Path(__file__).resolve().parents[1]
     notebook = json.loads((repo_root / "hw_pipeline.ipynb").read_text())
     runtime_config_cells = []
@@ -319,79 +306,13 @@ def test_hw_pipeline_notebook_passes_raw_memory_architecture_to_xpu():
     assert runtime_config_cells
     assert xpu_cells
     assert all(
-        "\"memory_architecture\": simulator_config[\"memory_architecture\"]"
+        "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_bytes_per_sec\"]"
         in cell
         for cell in runtime_config_cells
     )
+    assert all("\"memory_architecture\"" not in cell for cell in runtime_config_cells)
     assert all(
-        "\"hbf_sram_intermediate_buffer\": simulator_config[\"hbf_sram_intermediate_buffer\"]"
-        in cell
+        "\"hbf_sram_intermediate_buffer\"" not in cell
         for cell in runtime_config_cells
     )
     assert all("xpu = xPU(nand_config, **runtime_simulator_config)" in cell for cell in xpu_cells)
-
-
-def test_run_macro_ops_supports_h100_sxm_cli_matmul():
-    config = make_config()
-
-    result = run_macro_ops(
-        config,
-        [MatMulOp(dim=(1, 4096, 4096), weight_bits=16)],
-        hbf_sram_intermediate_buffer=True,
-        memory_architecture=h100_cli_architecture(),
-        device_name="H100_SXM",
-        compile_mode="heuristic-GPU",
-    )
-
-    assert result.cycle > 0
-    assert result.time_ns > 0
-
-
-def test_cli_memory_architecture_is_rejected_on_unsupported_skus():
-    config = make_config()
-    commands = [MatMulOp(dim=(2, 16, 8), weight_bits=16)]
-
-    with pytest.raises(ValueError):
-        run_macro_ops(
-            config,
-            commands,
-            hbf_sram_intermediate_buffer=True,
-            memory_architecture=h100_cli_architecture(),
-            device_name="A100_80GB",
-            compile_mode="heuristic-GPU",
-        )
-
-    with pytest.raises(ValueError):
-        xPU(
-            config,
-            hbf_sram_intermediate_buffer=True,
-            memory_architecture=h100_cli_architecture(),
-            device_name="H100_PCIE",
-            compile_mode="heuristic-GPU",
-        )
-
-    with pytest.raises(ValueError):
-        xPU(
-            config,
-            hbf_sram_intermediate_buffer=True,
-            memory_architecture={"mode": "cli", "hbm_stacks": 3, "hbf_stacks": 3},
-            device_name="H200_NVL",
-            compile_mode="heuristic-GPU",
-        )
-
-
-def test_run_macro_ops_and_xpu_require_hbf_sram_intermediate_buffer():
-    config = make_config()
-
-    with pytest.raises(TypeError):
-        run_macro_ops(
-            config,
-            [MatMulOp(dim=(2, 16, 8), weight_bits=16)],
-            memory_architecture=hbm_only_architecture(),
-        )
-
-    with pytest.raises(TypeError):
-        xPU(
-            config,
-            memory_architecture=hbm_only_architecture(),
-        )

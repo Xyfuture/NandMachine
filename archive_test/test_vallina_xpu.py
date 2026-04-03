@@ -11,6 +11,7 @@ from nandmachine.commands.macro import (
     VectorOp,
 )
 from nandmachine.config.config import NandConfig
+from nandmachine.config.hardware_config import get_device_or_raise
 
 
 def make_config() -> NandConfig:
@@ -27,11 +28,18 @@ def make_config() -> NandConfig:
     )
 
 
+def hbm_bandwidth_bytes_per_sec(device_name: str = "A100_80GB") -> float:
+    return get_device_or_raise(device_name).io_module.bandwidth
+
+
 def test_vallina_compute_engine_adds_tread_only_to_matmul_and_flashattn(monkeypatch):
     SimSession.reset()
     SimSession.init()
 
-    engine = vallina_xpu_module.VallinaComputeEngine(make_config())
+    engine = vallina_xpu_module.VallinaComputeEngine(
+        make_config(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
+    )
 
     def fake_execute_macro_op(self, macro_op):
         if isinstance(macro_op, MatMulOp):
@@ -78,7 +86,10 @@ def test_vallina_xpu_load_command_routes_prefetch_to_dedicated_engine():
     release = SramPrefetchRelease().with_inputs(matmul)
     vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8], weight_bits=16).with_inputs(matmul)
 
-    sim_xpu = vallina_xpu_module.VallinaXPU(make_config())
+    sim_xpu = vallina_xpu_module.VallinaXPU(
+        make_config(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
+    )
     sim_xpu.load_command([vector_norm, prefetch, matmul, release, vector_act])
 
     assert [slot.payload for slot in sim_xpu.prefetch_engine.prefetch_command_queue] == [
@@ -112,7 +123,10 @@ def test_vallina_xpu_prefetch_engine_waits_one_ns(monkeypatch):
     release = SramPrefetchRelease().with_inputs(matmul)
     vector_act = VectorOp(vector_op_type="silu_mul", vector_shape=[2, 8], weight_bits=16).with_inputs(matmul)
 
-    sim_xpu = vallina_xpu_module.VallinaXPU(make_config())
+    sim_xpu = vallina_xpu_module.VallinaXPU(
+        make_config(),
+        hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec(),
+    )
     sim_xpu.load_command([vector_norm, prefetch, matmul, release, vector_act])
 
     def fake_execute_macro_op(macro_op):
