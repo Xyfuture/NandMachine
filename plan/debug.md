@@ -1,6 +1,18 @@
 请你单独写一个 ipynb file ，仿照 llama_pipeline.ipynb ，但是 code gen pass 跑完之后我们要遍历每个 node， 拿到 node 的 macro op list 而不是全局的，针对每个 node 的 macro op list，我们单独跑模拟器，输出 node 的信息， macro op 的信息 和 模拟的时间
 这个要能支持配置不同的 tp size 
 
+- 使用 logging 在 xpu.py 中添加输出 -- 估计时间的部分提供 输出 
+
+
+参考 perfettotracer，利用这个库，在 nandmachine/simulator/hardware/xpu.py 中的 三个 engine ，每个都抓一下 trace 的信息，记录 指令的信息，需要你更改一下：
+- xpu 中记录一下 Tracer，然后传到 engine 中。记录一下是否启用，如果不启用，就传一个 none，不用记录了
+- xpu 中添加一个 save trace file 的功能， 支持自定义名字 
+- 每个 macro op 的名字要尽可能记录多的信息
+    - op id
+    - 各种有关维度的信息也要记录一下 
+你有什么拿不准的问题找我讨论一下 
+
+
 
 
 
@@ -31,6 +43,19 @@
 - 首先使用普通的 build_kv_cache_state 的函数，统计出 每个 layer 有多少个 KV block， 视作 balls，然后根据 nand config 中单个 plane 的大小，kv block size 的大小，和 plane 的数量计算出，有多少个 bins。
 - 按照前面的模型进行 balls into bins 仿真， 假设每个 balls 投到 bins 中的概率是相同的，然后找出 load 最大的 bin 中多少个 ball， 用这个值做为 kv cache state 中的 num hyper pages 的参数。
 
+
+
+
+给出一个写入量统计功能 
+
+在 kv cache state 中加上 写入量的统计，然后根据 write 的速度直接算出来 总共写入需要多长的时间
+
+
+
+
+需要评估 offloading 机制带来的开销 
+应该是一个专门的实验来验证这个的开销，仿真一段时间内的请求情况，然后评估 整体的写入量， 然后计算这个时间的消耗
+假设一个分布 ， 暂时先不处理erase的情况，一天只有 50 多次 erase 操作  
 
 
 

@@ -1,6 +1,10 @@
 import math
+from pathlib import Path
+from typing import Optional
 
-from Desim import SimModule, SimTime
+from Desim import SimModule, SimSession, SimTime
+from perf_tracer import PerfettoTracer
+from perf_tracer.tracer import TrackInfo
 
 import nandmachine.simulator.software.flash_attention as flash_attention_module
 import nandmachine.simulator.software.matmul as matmul_module
@@ -37,6 +41,99 @@ from nandmachine.simulator.software.matmul import MatMul_Simulation
 TRANSFER_OP_TYPES = (AllReduceOp, AllGatherOp, ReduceScatterOp, All2AllOp)
 
 
+def _validate_trace_binding(
+    tracer: Optional[PerfettoTracer],
+    trace_track: Optional[TrackInfo],
+    engine_name: str,
+) -> None:
+    if (tracer is None) != (trace_track is None):
+        raise ValueError(
+            f"{engine_name} trace binding is invalid: tracer and trace_track must both be set or both be None"
+        )
+
+
+def _get_current_sim_cycle() -> int:
+    return SimSession.sim_time.cycle
+
+
+def _format_shape(shape: tuple[int, ...] | list[int]) -> str:
+    return "x".join(str(value) for value in shape)
+
+
+def _format_macro_op_trace_name(macro_op: MacroOp) -> str:
+    if isinstance(macro_op, MatMulOp):
+        m, k, n = macro_op.shape
+        return f"MatMul[id={macro_op.id},m={m},k={k},n={n},bits={macro_op.weight_bits}]"
+
+    if isinstance(macro_op, FlashAttnOp):
+        qk_b, qk_m, qk_k, qk_n = macro_op.qk_bmm_input_shape
+        sv_b, sv_m, sv_n, sv_k = macro_op.sv_bmm_input_shape
+        softmax_m, softmax_n = macro_op.softmax_input_shape
+        return (
+            "FlashAttn["
+            f"id={macro_op.id},"
+            f"qk_b={qk_b},qk_m={qk_m},qk_k={qk_k},qk_n={qk_n},"
+            f"sv_b={sv_b},sv_m={sv_m},sv_n={sv_n},sv_k={sv_k},"
+            f"softmax_m={softmax_m},softmax_n={softmax_n},"
+            f"bits={macro_op.weight_bits}"
+            "]"
+        )
+
+    if isinstance(macro_op, VectorOp):
+        return (
+            "Vector["
+            f"id={macro_op.id},type={macro_op.vector_op_type},"
+            f"shape={_format_shape(macro_op.vector_shape)},bits={macro_op.weight_bits}"
+            "]"
+        )
+
+    if isinstance(macro_op, SramPrefetch):
+        return f"SramPrefetch[id={macro_op.id},pages={macro_op.num_prefetch_pages}]"
+
+    if isinstance(macro_op, AllReduceOp):
+        return (
+            f"AllReduce[id={macro_op.id},ranks={macro_op.num_ranks},"
+            f"bytes={macro_op.data_size},bits={macro_op.weight_bits}]"
+        )
+
+    if isinstance(macro_op, AllGatherOp):
+        return f"AllGather[id={macro_op.id},ranks={macro_op.num_ranks},bytes={macro_op.data_size}]"
+
+    if isinstance(macro_op, ReduceScatterOp):
+        return (
+            f"ReduceScatter[id={macro_op.id},ranks={macro_op.num_ranks},bytes={macro_op.data_size}]"
+        )
+
+    if isinstance(macro_op, All2AllOp):
+        return (
+            f"All2All[id={macro_op.id},gpus={macro_op.num_gpus},"
+            f"bytes={macro_op.data_size},bits={macro_op.weight_bits}]"
+        )
+
+    raise TypeError(f"Unsupported macro op type for trace formatting: {type(macro_op).__name__}")
+
+
+def _record_macro_op_trace(
+    tracer: Optional[PerfettoTracer],
+    trace_track: Optional[TrackInfo],
+    macro_op: MacroOp,
+    start_cycle: int,
+    end_cycle: int,
+    category: str,
+) -> None:
+    if tracer is None:
+        return
+    if trace_track is None:
+        raise ValueError("trace_track must be set when tracer is enabled")
+    tracer.complete_event(
+        trace_track,
+        start_ts=float(start_cycle),
+        end_ts=float(end_cycle),
+        name=_format_macro_op_trace_name(macro_op),
+        category=category,
+    )
+
+
 def _sync_hbf_sram_intermediate_buffer(enable: bool) -> None:
     matmul_module.ENABLE_CLI_HBF_SRAM_BUFFER = enable
     flash_attention_module.ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = enable
@@ -55,13 +152,22 @@ def _normalize_time_ns(time_ns: float, name: str) -> int:
 
 
 class PerfetchEngine(SimModule):
-    def __init__(self,nand_controller:NandController):
+    def __init__(
+        self,
+        nand_controller: NandController,
+        *,
+        tracer: Optional[PerfettoTracer] = None,
+        trace_track: Optional[TrackInfo] = None,
+    ):
         super().__init__()
 
         # 负责处理发射 SramPrefetch 和 Release 请求
         # 向Nand Controller 发射细粒度的请求
 
         self.nand_controller:NandController = nand_controller
+        self.tracer = tracer
+        self.trace_track = trace_track
+        _validate_trace_binding(self.tracer, self.trace_track, self.__class__.__name__)
 
         self.prefetch_command_queue:list[DepSlot] = [] 
 
@@ -89,10 +195,20 @@ class PerfetchEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
             # 开始执行
+            start_cycle = _get_current_sim_cycle()
             nand_request_slot = DepSlot(macro_op_slot.payload.num_prefetch_pages)
 
             self.nand_controller.handle_request(nand_request_slot)
             SimModule.wait(nand_request_slot.finish_event)
+            end_cycle = _get_current_sim_cycle()
+            _record_macro_op_trace(
+                self.tracer,
+                self.trace_track,
+                macro_op_slot.payload,
+                start_cycle,
+                end_cycle,
+                "prefetch",
+            )
 
             macro_op_slot.is_finished = True
             macro_op_slot.finish_event.notify(SimTime(1))
@@ -114,6 +230,8 @@ class ComputeEngine(SimModule):
         memory_architecture: dict[str, object],
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        tracer: Optional[PerfettoTracer] = None,
+        trace_track: Optional[TrackInfo] = None,
     ):
         super().__init__()
 
@@ -131,6 +249,9 @@ class ComputeEngine(SimModule):
             memory_architecture,
         )
         self.compile_mode = compile_mode
+        self.tracer = tracer
+        self.trace_track = trace_track
+        _validate_trace_binding(self.tracer, self.trace_track, self.__class__.__name__)
         _sync_hbf_sram_intermediate_buffer(hbf_sram_intermediate_buffer)
 
         
@@ -147,9 +268,19 @@ class ComputeEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
             
+            start_cycle = _get_current_sim_cycle()
             execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
             wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
             SimModule.wait_time(SimTime(wait_time_ns))
+            end_cycle = _get_current_sim_cycle()
+            _record_macro_op_trace(
+                self.tracer,
+                self.trace_track,
+                macro_op_slot.payload,
+                start_cycle,
+                end_cycle,
+                "compute",
+            )
             macro_op_slot.finish_event.notify(SimTime(1))
             SimModule.wait(macro_op_slot.finish_event)
             macro_op_slot.is_finished = True
@@ -364,6 +495,8 @@ class TransferEngine(SimModule):
         *,
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        tracer: Optional[PerfettoTracer] = None,
+        trace_track: Optional[TrackInfo] = None,
     ):
         super().__init__()
 
@@ -373,6 +506,9 @@ class TransferEngine(SimModule):
         self.device_name = device_name
         self.compile_mode = compile_mode
         self.device: Device = device_dict[device_name]
+        self.tracer = tracer
+        self.trace_track = trace_track
+        _validate_trace_binding(self.tracer, self.trace_track, self.__class__.__name__)
         self.transfer_command_queue:list[DepSlot[MacroOp]] = []
 
 
@@ -384,9 +520,19 @@ class TransferEngine(SimModule):
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
 
+            start_cycle = _get_current_sim_cycle()
             execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
             wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
             SimModule.wait_time(SimTime(wait_time_ns))
+            end_cycle = _get_current_sim_cycle()
+            _record_macro_op_trace(
+                self.tracer,
+                self.trace_track,
+                macro_op_slot.payload,
+                start_cycle,
+                end_cycle,
+                "transfer",
+            )
             macro_op_slot.finish_event.notify(SimTime(1))
             SimModule.wait(macro_op_slot.finish_event)
             macro_op_slot.is_finished = True
@@ -486,6 +632,7 @@ class xPU(SimModule):
         memory_architecture: dict[str, object],
         device_name: str = "A100_80GB",
         compile_mode: str = "heuristic-GPU",
+        enable_trace: bool = False,
     ):
         super().__init__()
 
@@ -494,6 +641,21 @@ class xPU(SimModule):
         self.hbf_sram_intermediate_buffer = hbf_sram_intermediate_buffer
         self.memory_architecture = memory_architecture
         self.compile_mode = compile_mode
+        self.enable_trace = enable_trace
+
+        self.tracer: Optional[PerfettoTracer] = None
+        self.trace_module_name: Optional[str] = None
+        self.prefetch_trace_track: Optional[TrackInfo] = None
+        self.compute_trace_track: Optional[TrackInfo] = None
+        self.transfer_trace_track: Optional[TrackInfo] = None
+
+        if self.enable_trace:
+            self.tracer = PerfettoTracer(ns_per_cycle=1.0)
+            self.trace_module_name = f"{self.__class__.__name__}:{id(self)}"
+            trace_module = self.tracer.register_module(self.trace_module_name)
+            self.prefetch_trace_track = self.tracer.register_track("prefetch_engine", trace_module)
+            self.compute_trace_track = self.tracer.register_track("compute_engine", trace_module)
+            self.transfer_trace_track = self.tracer.register_track("transfer_engine", trace_module)
 
         # 在这里初始化 nand controller
         self.nand_controller = NandController(self.nand_config)
@@ -506,12 +668,30 @@ class xPU(SimModule):
             memory_architecture=memory_architecture,
             device_name=device_name,
             compile_mode=compile_mode,
+            tracer=self.tracer,
+            trace_track=self.compute_trace_track,
         )
         self.transfer_engine = TransferEngine(
             device_name=device_name,
             compile_mode=compile_mode,
+            tracer=self.tracer,
+            trace_track=self.transfer_trace_track,
         )
-        self.prefetch_engine = PerfetchEngine(self.nand_controller)
+        self.prefetch_engine = PerfetchEngine(
+            self.nand_controller,
+            tracer=self.tracer,
+            trace_track=self.prefetch_trace_track,
+        )
+
+    def save_trace_file(self, file_name: str) -> str:
+        if self.tracer is None:
+            raise RuntimeError("Tracing is disabled on this xPU instance")
+        if not file_name:
+            raise ValueError("file_name must be a non-empty string")
+
+        output_path = Path(file_name)
+        self.tracer.save(str(output_path))
+        return str(output_path)
 
 
     def load_command(self,command_list:list[MacroOp]):
