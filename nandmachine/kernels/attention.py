@@ -49,7 +49,7 @@ class GQANandKernel(NandKernelBase):
 
 
         for i in range(num_hyper_pgaes):
-            sram_prefetch = SramPrefetch(nand_config.num_plane)
+            sram_prefetch = SramPrefetch(nand_config.num_plane*nand_config.num_channels)
             
             flash_attn = FlashAttnOp(
                 qk_bmm_shape=(b,m,k,n),

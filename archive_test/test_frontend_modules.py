@@ -57,12 +57,11 @@ def _build_attention_graph_meta(
             parallel_config=parallel_config,
         ),
         kv_cache_state=KVCacheState(
-            total_kv_cache_size_per_layer=1024,
-            num_nand_pages_per_layer=8,
+            total_kv_cache_size_per_layer=3072,
+            num_nand_pages_per_layer=1,
             num_hyper_pages_per_layer=1,
-            kv_block_size_tokens=16,
-            num_kv_blocks=4,
-            kv_cache_num_pages_per_layer=8,
+            kv_block_size_tokens=8,
+            num_kv_blocks=3,
         ),
     )
 
@@ -134,10 +133,10 @@ def test_rotary_embedding_forward_keeps_qk_shapes():
 
 def test_attention_forward_matches_query_shape():
     module = Attention(
-        num_heads=4,
+        num_heads=8,
         head_dim=8,
         scale=8 ** -0.5,
-        num_kv_heads=2,
+        num_kv_heads=4,
         tp_size=2,
         dp_size=1,
     )
@@ -154,10 +153,10 @@ def test_attention_forward_matches_query_shape():
 
 def test_attention_codegen_rejects_dense_dp_size_mismatch():
     module = Attention(
-        num_heads=4,
+        num_heads=8,
         head_dim=8,
         scale=8 ** -0.5,
-        num_kv_heads=2,
+        num_kv_heads=4,
         tp_size=2,
         dp_size=2,
     )
@@ -171,10 +170,10 @@ def test_attention_codegen_rejects_dense_dp_size_mismatch():
 
 def test_attention_codegen_rejects_moe_dp_size_mismatch():
     module = Attention(
-        num_heads=4,
+        num_heads=8,
         head_dim=8,
         scale=8 ** -0.5,
-        num_kv_heads=2,
+        num_kv_heads=4,
         tp_size=2,
         dp_size=1,
     )
@@ -192,20 +191,20 @@ def test_attention_codegen_rejects_moe_dp_size_mismatch():
         module.macro_code_gen(graph_meta)
 
 
-def test_attention_codegen_rejects_tp_size_mismatch():
+def test_attention_codegen_rejects_global_head_mismatch():
     module = Attention(
-        num_heads=4,
+        num_heads=16,
         head_dim=8,
         scale=8 ** -0.5,
-        num_kv_heads=2,
-        tp_size=1,
+        num_kv_heads=4,
+        tp_size=2,
         dp_size=1,
     )
     graph_meta = _build_attention_graph_meta(
         DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1)
     )
 
-    with pytest.raises(ValueError, match="Attention tp_size must be 2, got 1"):
+    with pytest.raises(ValueError, match="Attention global num_heads do not match model_config"):
         module.macro_code_gen(graph_meta)
 
 
@@ -241,10 +240,10 @@ def test_linear_codegen_uses_hbm_kernel_without_prefetch_or_release():
 
 def test_attention_codegen_uses_hbm_kernel_without_prefetch_or_release():
     module = Attention(
-        num_heads=4,
+        num_heads=8,
         head_dim=8,
         scale=8 ** -0.5,
-        num_kv_heads=2,
+        num_kv_heads=4,
         tp_size=2,
         dp_size=1,
     )
@@ -261,6 +260,69 @@ def test_attention_codegen_uses_hbm_kernel_without_prefetch_or_release():
     assert not any(isinstance(op, SramPrefetchRelease) for op in macro_op_list)
 
 
+def test_build_gqa_kernel_param_keeps_single_rank_block_shape():
+    module = Attention(
+        num_heads=8,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=4,
+        tp_size=1,
+        dp_size=1,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+    )
+
+    params = module.build_gqa_kernel_param(graph_meta)
+
+    assert params[:6] == (2, 4, 8, 3, 8, 1024)
+
+
+def test_build_gqa_kernel_param_recomputes_local_block_shape_for_tp():
+    module = Attention(
+        num_heads=8,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=4,
+        tp_size=2,
+        dp_size=1,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=2, dp_size=1),
+        memory_backend="hbm",
+    )
+
+    params = module.build_gqa_kernel_param(graph_meta)
+    macro_op_list = module.macro_code_gen(graph_meta)
+
+    assert params[:6] == (2, 2, 8, 2, 16, 1024)
+    assert len(macro_op_list) == 1
+    assert isinstance(macro_op_list[0], FlashAttnOp)
+    assert macro_op_list[0].qk_bmm_shape == (4, 2, 8, 16)
+    assert macro_op_list[0].sv_bmm_shape == (4, 2, 16, 8)
+    assert macro_op_list[0].softmax_shape == (8, 16)
+
+
+def test_build_gqa_kernel_param_rejects_non_unit_dp():
+    module = Attention(
+        num_heads=8,
+        head_dim=8,
+        scale=8 ** -0.5,
+        num_kv_heads=4,
+        tp_size=1,
+        dp_size=2,
+    )
+    graph_meta = _build_attention_graph_meta(
+        DenseParallelConfig(num_ranks=2, tp_size=1, dp_size=2),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Attention build_gqa_kernel_param only supports dp_size == 1, got 2",
+    ):
+        module.build_gqa_kernel_param(graph_meta)
+
+
 def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():
     class HookModulePipeline(torch.nn.Module):
         def __init__(self) -> None:
@@ -275,10 +337,10 @@ def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():
                 base=10000.0,
             )
             self.attn = Attention(
-                num_heads=4,
+                num_heads=8,
                 head_dim=8,
                 scale=8 ** -0.5,
-                num_kv_heads=2,
+                num_kv_heads=4,
                 tp_size=2,
                 dp_size=1,
             )

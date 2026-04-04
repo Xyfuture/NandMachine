@@ -74,3 +74,8 @@
 
 
 nand 部分添加一个 feature ，等待容量空闲的特性 
+
+
+
+
+你看一下 nandmachine/frontend/utlis.py 中的关于 build kv cache 的逻辑，进行重写，只计算整体的 batch 情况，不区分并行的事情，并行相关的处理已经放到后面进行了，不要在因为 TP 之类的拆分 kv cache 了

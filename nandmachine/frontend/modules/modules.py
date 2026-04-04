@@ -33,6 +33,12 @@ def divide(numerator: int, denominator: int) -> int:
     return numerator // denominator
 
 
+def ceil_div(numerator: int, denominator: int) -> int:
+    if denominator <= 0:
+        raise ValueError(f"denominator must be > 0, got {denominator}")
+    return (numerator + denominator - 1) // denominator
+
+
 def get_kernel_backend(graph_meta: NxGraphMeta) -> str:
     backend = graph_meta.inference_config.memory_backend
     if backend not in {"nand", "hbm"}:
@@ -317,7 +323,6 @@ class Attention(HookModuleBase):
     def build_gqa_kernel_param(self,graph_meta:NxGraphMeta):
         model_config = graph_meta.model_config
         inference_config = graph_meta.inference_config
-        kv_cache_state = graph_meta.kv_cache_state
 
         if model_config.attention_type != 'gqa':
             raise ValueError(
@@ -355,23 +360,40 @@ class Attention(HookModuleBase):
             raise ValueError(
                 f"Attention dp_size must be {actual_dp_size}, got {self.dp_size}"
             )
+        if self.dp_size != 1:
+            raise ValueError(
+                f"Attention build_gqa_kernel_param only supports dp_size == 1, got {self.dp_size}"
+            )
 
         
 
         group_size = divide(self.local_num_heads, self.local_num_kv_heads)
         num_kv_heads = self.local_num_kv_heads
         head_dim = self.head_dim 
-        
-
-        # 因为并行的原因，需要拆分 
-        num_kv_blocks:int = kv_cache_state.num_kv_blocks // (self.dp_size*self.tp_size)
-        
-        kv_block_size:int = kv_cache_state.kv_block_size_tokens
         block_bytes:int = inference_config.kv_block_size_bytes
 
         kv_cache_bits:int = inference_config.kv_cache_bits
         input_bits:int = inference_config.activation_bits
         nand_config = graph_meta.nand_config
+        
+        
+        peak_sequence_length = (
+            inference_config.input_sequence_length + inference_config.output_sequence_length
+        )
+        per_token_kv_value_count = num_kv_heads * head_dim * 2
+        per_token_kv_bytes = ceil_div(per_token_kv_value_count * kv_cache_bits, 8)
+        kv_block_size:int = ceil_div(block_bytes, per_token_kv_bytes)
+        local_total_kv_value_count = (
+            inference_config.batch_size
+            * peak_sequence_length
+            * num_kv_heads
+            * head_dim
+            * 2
+        )
+        local_total_kv_bytes = ceil_div(local_total_kv_value_count * kv_cache_bits, 8)
+        num_kv_blocks:int = (
+            ceil_div(local_total_kv_bytes, block_bytes) if local_total_kv_bytes > 0 else 0
+        )
 
         return (
             group_size,

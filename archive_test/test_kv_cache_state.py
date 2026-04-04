@@ -50,7 +50,7 @@ def make_inference_config(
     )
 
 
-def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_dp_rank_batch():
+def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_global_batch():
     model_config = Qwen3ModelConfig(
         hidden_size=4096,
         num_attention_heads=32,
@@ -75,11 +75,11 @@ def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_dp_rank_batch():
         inference_config,
     )
 
-    assert state.total_kv_cache_size_per_layer == 1_966_080
-    assert state.num_nand_pages_per_layer == 1_920
-    assert state.num_hyper_pages_per_layer == 480
+    assert state.total_kv_cache_size_per_layer == 6_553_600
+    assert state.num_nand_pages_per_layer == 6_400
+    assert state.num_hyper_pages_per_layer == 1_600
     assert state.kv_block_size_tokens == 16
-    assert state.num_kv_blocks == 30
+    assert state.num_kv_blocks == 100
 
 
 def test_calculate_kv_cache_state_for_mha_uses_attention_heads_as_kv_heads():
@@ -190,7 +190,7 @@ def test_calculate_kv_cache_state_scales_with_kv_precision():
     assert state_16bit.num_kv_blocks == 2 * state_8bit.num_kv_blocks
 
 
-def test_calculate_kv_cache_state_scales_down_local_kv_heads_for_tp():
+def test_calculate_kv_cache_state_ignores_tp_when_sizing_global_kv_cache():
     model_config = Qwen3ModelConfig(
         hidden_size=4096,
         num_attention_heads=32,
@@ -214,14 +214,14 @@ def test_calculate_kv_cache_state_scales_down_local_kv_heads_for_tp():
         ),
     )
 
-    assert state.total_kv_cache_size_per_layer == 655_360
-    assert state.num_nand_pages_per_layer == 640
-    assert state.num_hyper_pages_per_layer == 160
-    assert state.kv_block_size_tokens == 64
-    assert state.num_kv_blocks == 10
+    assert state.total_kv_cache_size_per_layer == 2_621_440
+    assert state.num_nand_pages_per_layer == 2_560
+    assert state.num_hyper_pages_per_layer == 640
+    assert state.kv_block_size_tokens == 16
+    assert state.num_kv_blocks == 40
 
 
-def test_calculate_kv_cache_state_uses_attn_tp_size_for_moe_parallel_config():
+def test_calculate_kv_cache_state_ignores_moe_parallelism_when_sizing_global_kv_cache():
     model_config = Qwen3ModelConfig(
         hidden_size=4096,
         num_attention_heads=32,
@@ -251,14 +251,14 @@ def test_calculate_kv_cache_state_uses_attn_tp_size_for_moe_parallel_config():
         ),
     )
 
-    assert state.total_kv_cache_size_per_layer == 655_360
-    assert state.num_nand_pages_per_layer == 640
-    assert state.num_hyper_pages_per_layer == 160
-    assert state.kv_block_size_tokens == 64
-    assert state.num_kv_blocks == 10
+    assert state.total_kv_cache_size_per_layer == 2_621_440
+    assert state.num_nand_pages_per_layer == 2_560
+    assert state.num_hyper_pages_per_layer == 640
+    assert state.kv_block_size_tokens == 16
+    assert state.num_kv_blocks == 40
 
 
-def test_calculate_kv_cache_state_uses_num_ranks_when_only_device_count_is_available():
+def test_calculate_kv_cache_state_ignores_num_ranks_when_sizing_global_kv_cache():
     model_config = Qwen3ModelConfig(
         hidden_size=1024,
         num_attention_heads=8,
@@ -283,11 +283,11 @@ def test_calculate_kv_cache_state_uses_num_ranks_when_only_device_count_is_avail
         inference_config,
     )
 
-    assert state.total_kv_cache_size_per_layer == 49_152
-    assert state.num_nand_pages_per_layer == 48
-    assert state.num_hyper_pages_per_layer == 24
+    assert state.total_kv_cache_size_per_layer == 147_456
+    assert state.num_nand_pages_per_layer == 144
+    assert state.num_hyper_pages_per_layer == 72
     assert state.kv_block_size_tokens == 32
-    assert state.num_kv_blocks == 1
+    assert state.num_kv_blocks == 3
 
 
 def test_calculate_kv_cache_state_supports_llama_gqa_config():
@@ -430,8 +430,8 @@ def test_build_imbalanced_kv_cache_state_uses_balanced_hyper_page_size_with_chan
     assert imbalanced_state.num_nand_pages_per_layer == balanced_state.num_nand_pages_per_layer
     assert imbalanced_state.kv_block_size_tokens == balanced_state.kv_block_size_tokens
     assert imbalanced_state.num_kv_blocks == balanced_state.num_kv_blocks
-    assert balanced_state.num_hyper_pages_per_layer == 30
-    assert imbalanced_state.num_hyper_pages_per_layer == 30
+    assert balanced_state.num_hyper_pages_per_layer == 100
+    assert imbalanced_state.num_hyper_pages_per_layer == 100
 
 
 def test_calculate_kv_cache_state_uses_num_channels_in_hyper_page_count():
