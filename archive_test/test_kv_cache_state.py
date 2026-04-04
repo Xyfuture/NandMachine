@@ -385,7 +385,7 @@ def test_calculate_kv_cache_state_keeps_block_shape_when_total_cache_is_zero():
     assert state.num_kv_blocks == 0
 
 
-def test_build_imbalanced_kv_cache_state_only_updates_num_hyper_pages():
+def test_build_imbalanced_kv_cache_state_uses_balanced_hyper_page_size_with_channels():
     model_config = Qwen3ModelConfig(
         hidden_size=4096,
         num_attention_heads=32,
@@ -430,8 +430,65 @@ def test_build_imbalanced_kv_cache_state_only_updates_num_hyper_pages():
     assert imbalanced_state.num_nand_pages_per_layer == balanced_state.num_nand_pages_per_layer
     assert imbalanced_state.kv_block_size_tokens == balanced_state.kv_block_size_tokens
     assert imbalanced_state.num_kv_blocks == balanced_state.num_kv_blocks
-    assert balanced_state.num_hyper_pages_per_layer == 60
+    assert balanced_state.num_hyper_pages_per_layer == 30
     assert imbalanced_state.num_hyper_pages_per_layer == 30
+
+
+def test_calculate_kv_cache_state_uses_num_channels_in_hyper_page_count():
+    model_config = Qwen3ModelConfig(
+        hidden_size=4096,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        max_position_embeddings=40960,
+        intermediate_size=12288,
+        hidden_act="silu",
+        head_dim=128,
+        attention_type="gqa",
+    )
+    inference_config = make_inference_config(
+        batch_size=1,
+        input_sequence_length=16,
+        output_sequence_length=0,
+        kv_cache_bits=8,
+        parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        kv_block_size_bytes=8 * 1024,
+    )
+
+    state_one_channel = calculate_kv_cache_state(
+        NandConfig(
+            num_channels=1,
+            num_plane=1,
+            num_block=4,
+            num_pages=8,
+            tRead=1.0,
+            tWrite=1.0,
+            tErase=1.0,
+            page_size=8,
+            sram_threshold=1,
+        ),
+        model_config,
+        inference_config,
+    )
+    state_two_channels = calculate_kv_cache_state(
+        NandConfig(
+            num_channels=2,
+            num_plane=1,
+            num_block=4,
+            num_pages=8,
+            tRead=1.0,
+            tWrite=1.0,
+            tErase=1.0,
+            page_size=8,
+            sram_threshold=1,
+        ),
+        model_config,
+        inference_config,
+    )
+
+    assert state_one_channel.total_kv_cache_size_per_layer == state_two_channels.total_kv_cache_size_per_layer
+    assert state_one_channel.num_nand_pages_per_layer == state_two_channels.num_nand_pages_per_layer
+    assert state_one_channel.num_hyper_pages_per_layer == 4
+    assert state_two_channels.num_hyper_pages_per_layer == 2
 
 
 def test_build_imbalanced_kv_cache_state_uses_num_channels_in_bin_count():

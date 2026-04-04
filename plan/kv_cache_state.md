@@ -8,12 +8,11 @@
         - 每个 layer 总计的 KV cache 大小 (聚合所有的 Batch 和 Sequence length)
         - 存储上述这些 kv cache 一共需要多少的 nand page
         - 存储上述这些 kv cache 一共需要多少的 hyper page
-            - hyper page 就是 num_planes 个 nand page 的总大小
+            - hyper page 就是 num_channels * num_planes 个 nand page 的总大小
 - 要求
     - 要能正确的实现 输出 的内容
     - 正确区分 MHA，GQA，MLA(暂时不需要) 的 KV Cache 计算逻辑
     - 能够从inference config 中拿到 kv cache 的精度信息，做出对应的操作。 
-
 
 
 

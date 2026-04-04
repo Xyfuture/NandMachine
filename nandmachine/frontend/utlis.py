@@ -616,7 +616,10 @@ def calculate_kv_cache_state(
     )
 
     page_size_bytes = nand_config.page_size_bytes
-    hyper_page_size_bytes = nand_config.num_plane * page_size_bytes
+
+    hyper_page_size_bytes = (
+        nand_config.num_channels * nand_config.num_plane * page_size_bytes
+    )
     num_nand_pages = _ceil_div(total_bytes, page_size_bytes) if total_bytes else 0
     num_hyper_pages = _ceil_div(total_bytes, hyper_page_size_bytes) if total_bytes else 0
     num_kv_blocks = (
