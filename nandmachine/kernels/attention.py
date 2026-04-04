@@ -35,7 +35,7 @@ class GQANandKernel(NandKernelBase):
 
         macro_op_list:list[MacroOp] = [] 
 
-        hyper_page_size = nand_config.num_plane * nand_config.page_size_bytes
+        hyper_page_size = nand_config.num_channels * nand_config.num_plane * nand_config.page_size_bytes
 
         num_hyper_pgaes:int = math.ceil(block_bytes * num_kv_blocks / hyper_page_size)
         

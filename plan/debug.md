@@ -17,8 +17,12 @@
 
 
 
-你看一下，现在的代码代码中有关于 FlashAttention 的逻辑，包括生成的 macro op 和 针对 macro op 模拟的 模拟器相关的逻辑，我现在想引入对 deepseek v3 中的 mla 的支持，实现一个用于 decode phase的 FlashMLA 的模拟，需要配置的东西，首先生成专门的 macro op和针对该 macro op 的模拟逻辑，包括类似 nandmachine/kernels/attention.py 的 MLA code gen kernel 。然后参考 nandmachine/frontend/network/qwen3_moe.py 和 model_cards/deepseek-v3.json 中的逻辑和格式，构建一个 deepseek v3 的 model 类，需要仔细思考有关 mla 部分的实现，要正确处理 macro op 的生成 。 你仔细思考一下，如果有问题的话，及时问我。
-
+你看一下，现在的代码代码中有关于 FlashAttention 的逻辑，包括生成的 macro op 和 针对 macro op 模拟的 模拟器相关的逻辑，我现在想引入对 deepseek v3 中的 mla 的支持，实现一个用于 decode phase的 FlashMLA 的模拟，需要配置的东西，首先生成专门的 macro op和针对该 macro op 的模拟逻辑，包括类似 nandmachine/kernels/attention.py 的 MLA code gen kernel 。然后参考 nandmachine/frontend/network/qwen3_moe.py 和 model_cards/deepseek-v3.json 中的逻辑和格式，构建一个 deepseek v3 的 model 类，需要仔细思考有关 mla 部分的实现，要正确处理 macro op 的生成 。 你仔细思考一下，如果有问题的话，及时问我。 大致需要改动的功能:
+- 能够类似 nandmachine/frontend/network/qwen3_moe.py 构建出 支持 dp/ep 的 model 基本架构，能够跑通 normalize pass 和 macro op code gen pass
+- 能够类似 nandmachine/kernels/attention.py 中提供 macro op 转换的功能
+    - 需要提前定义 FlashMLA 的 macro op
+- 能够类似 nandmachine/simulator/software/flash_attention.py 支持对 flashmla 的仿真
+- 编写一个类似 frontend_pipeline_moe.ipynb 的测试 pipeline 
 
 
 
