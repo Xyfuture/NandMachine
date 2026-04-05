@@ -21,6 +21,7 @@ from nandmachine.config.hardware_config import A100_80GB_FP16, get_device_or_rai
 from nandmachine.simulator.hardware.utils import DepSlot
 from nandmachine.simulator.software.flash_attention import (
     FlashAttn_BatchedMatMul_Simulation,
+    FlashMLA_BatchedMatMul_Simulation,
     Softmax_Simulation,
 )
 from nandmachine.simulator.software.matmul import MatMul_Simulation
@@ -455,6 +456,51 @@ def test_flashattn_qk_and_sv_split_bandwidth_formulas(monkeypatch):
     ) == math.ceil(sv_mk_bytes / hbm_per_cycle)
 
 
+def test_flashattn_mla_main_memory_read_and_write_match_expected_semantics():
+    nand_config = make_nand_config(num_channels=2, num_plane=2, tRead=4.0, page_size=16)
+    hbm_bw = 1.0e12
+    bandwidth_config_key = flash_attention_module._build_bandwidth_config_key_or_raise(
+        nand_config,
+        hbm_bw,
+    )
+
+    assert flash_attention_module._simulate_flashattn_main_memory_read_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        matmul_type="MLA_QK",
+        qk_mk_or_sv_mk_bytes=4096,
+        qk_kn_or_sv_nk_bytes=8192,
+    ) == flash_attention_module._simulate_flashattn_qk_cli_read_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        qk_mk_bytes=0,
+        qk_kn_bytes=8192,
+    )
+    assert flash_attention_module._simulate_flashattn_main_memory_read_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        matmul_type="MLA_SV",
+        qk_mk_or_sv_mk_bytes=0,
+        qk_kn_or_sv_nk_bytes=6144,
+    ) == 0
+    assert flash_attention_module._simulate_flashattn_main_memory_write_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        matmul_type="MLA_QK",
+        sv_mk_bytes=2048,
+    ) == 0
+    assert flash_attention_module._simulate_flashattn_main_memory_write_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        matmul_type="MLA_SV",
+        sv_mk_bytes=2048,
+    ) == flash_attention_module._simulate_flashattn_sv_cli_write_cycle_count(
+        A100_80GB_FP16,
+        bandwidth_config_key,
+        sv_mk_bytes=2048,
+    )
+
+
 def test_flashattn_batched_sv_merged_batch_extra_write_uses_current_buffer_formula(
     monkeypatch,
 ):
@@ -522,6 +568,195 @@ def test_flashattn_batched_sv_merged_batch_extra_write_uses_current_buffer_formu
     )
 
     assert cycles == merged_batch_cycle_count + expected_extra_write_cycles
+
+
+def test_flashattn_batched_mla_qk_merged_batch_skips_extra_output_write(monkeypatch):
+    FlashAttn_BatchedMatMul_Simulation.clear_caches()
+
+    batch_size = 4
+    m_dim = 8
+    k_dim = 2
+    n_dim = 16
+    merged_batch_cycle_count = 10
+    per_batch_cycle_count = 100
+    nand_config = make_nand_config(num_channels=2, num_plane=2, tRead=4.0, page_size=16)
+    hbm_bw = 1.0e12
+
+    class FakeMatMulSimulation:
+        def __init__(self, M, K, N, weight_bits=16, matmul_type="QK"):
+            assert (M, N, weight_bits, matmul_type) == (m_dim, n_dim, 16, "MLA_QK")
+            self.K = K
+
+        def _build_compile_result(
+            self,
+            *,
+            pcb_module,
+            bandwidth_config_key,
+            compile_mode,
+        ):
+            assert pcb_module is A100_80GB_FP16
+            assert compile_mode == "heuristic-GPU"
+            assert bandwidth_config_key == flash_attention_module._build_bandwidth_config_key_or_raise(
+                nand_config,
+                hbm_bw,
+            )
+            if self.K == k_dim:
+                return SimpleNamespace(best_cycle_count=per_batch_cycle_count)
+            if self.K == k_dim * batch_size:
+                return SimpleNamespace(best_cycle_count=merged_batch_cycle_count)
+            raise AssertionError(f"Unexpected K dimension: {self.K}")
+
+    monkeypatch.setattr(
+        flash_attention_module,
+        "MatMul_Simulation",
+        FakeMatMulSimulation,
+    )
+
+    cycles = FlashAttn_BatchedMatMul_Simulation.get_instance(
+        dim=(batch_size, m_dim, k_dim, n_dim),
+        weight_bits=16,
+        matmul_type="MLA_QK",
+    ).compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        nand_config=nand_config,
+        hbm_bandwidth_bytes_per_sec=hbm_bw,
+        compile_mode="heuristic-GPU",
+    )
+
+    assert cycles == merged_batch_cycle_count
+
+
+def test_flashattn_batched_mla_sv_merged_batch_reuses_sv_extra_output_write(monkeypatch):
+    FlashAttn_BatchedMatMul_Simulation.clear_caches()
+
+    batch_size = 4
+    m_dim = 8
+    k_dim = 2
+    n_dim = 16
+    merged_batch_cycle_count = 10
+    per_batch_cycle_count = 100
+    nand_config = make_nand_config(num_channels=2, num_plane=2, tRead=4.0, page_size=16)
+    hbm_bw = 1.0e12
+    bandwidth_config_key = flash_attention_module._build_bandwidth_config_key_or_raise(
+        nand_config,
+        hbm_bw,
+    )
+    expected_extra_write_cycles = (
+        flash_attention_module._simulate_flashattn_sv_cli_write_cycle_count(
+            A100_80GB_FP16,
+            bandwidth_config_key,
+            sv_mk_bytes=(batch_size - 1) * m_dim * n_dim * 2,
+        )
+    )
+
+    class FakeMatMulSimulation:
+        def __init__(self, M, K, N, weight_bits=16, matmul_type="QK"):
+            assert (M, N, weight_bits, matmul_type) == (m_dim, n_dim, 16, "MLA_SV")
+            self.K = K
+
+        def _build_compile_result(
+            self,
+            *,
+            pcb_module,
+            bandwidth_config_key,
+            compile_mode,
+        ):
+            assert pcb_module is A100_80GB_FP16
+            assert compile_mode == "heuristic-GPU"
+            assert bandwidth_config_key == flash_attention_module._build_bandwidth_config_key_or_raise(
+                nand_config,
+                hbm_bw,
+            )
+            if self.K == k_dim:
+                return SimpleNamespace(best_cycle_count=per_batch_cycle_count)
+            if self.K == k_dim * batch_size:
+                return SimpleNamespace(best_cycle_count=merged_batch_cycle_count)
+            raise AssertionError(f"Unexpected K dimension: {self.K}")
+
+    monkeypatch.setattr(
+        flash_attention_module,
+        "MatMul_Simulation",
+        FakeMatMulSimulation,
+    )
+
+    cycles = FlashAttn_BatchedMatMul_Simulation.get_instance(
+        dim=(batch_size, m_dim, k_dim, n_dim),
+        weight_bits=16,
+        matmul_type="MLA_SV",
+    ).compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        nand_config=nand_config,
+        hbm_bandwidth_bytes_per_sec=hbm_bw,
+        compile_mode="heuristic-GPU",
+    )
+
+    assert cycles == merged_batch_cycle_count + expected_extra_write_cycles
+
+
+def test_flashmla_compile_and_simulate_forwards_mla_matmul_types(monkeypatch):
+    expected_nand_config = make_nand_config()
+    expected_hbm_bw = 1.0e12
+    seen_matmul_types = []
+
+    class FakeBatchedSimulation:
+        def compile_and_simulate(
+            self,
+            *,
+            pcb_module,
+            nand_config,
+            hbm_bandwidth_bytes_per_sec,
+            compile_mode,
+            return_unit="cycle",
+        ):
+            assert pcb_module is A100_80GB_FP16
+            assert nand_config == expected_nand_config
+            assert hbm_bandwidth_bytes_per_sec == expected_hbm_bw
+            assert compile_mode == "heuristic-GPU"
+            assert return_unit == "cycle"
+            return 7
+
+    class FakeSoftmaxSimulation:
+        def __init__(self, dim, weight_bits=16):
+            self.dim = dim
+            self.weight_bits = weight_bits
+
+        def compile_and_simulate(self, *, pcb_module, compile_mode, return_unit="cycle"):
+            assert pcb_module is A100_80GB_FP16
+            assert compile_mode == "heuristic-GPU"
+            assert return_unit == "cycle"
+            return 5
+
+    def fake_get_instance(dim, weight_bits=16, matmul_type="QK"):
+        del dim, weight_bits
+        seen_matmul_types.append(matmul_type)
+        return FakeBatchedSimulation()
+
+    monkeypatch.setattr(
+        flash_attention_module.FlashAttn_BatchedMatMul_Simulation,
+        "get_instance",
+        staticmethod(fake_get_instance),
+    )
+    monkeypatch.setattr(
+        flash_attention_module,
+        "Softmax_Simulation",
+        FakeSoftmaxSimulation,
+    )
+
+    cycles = FlashMLA_BatchedMatMul_Simulation(
+        qk_latent_dim=(2, 1, 4, 2),
+        qk_rope_dim=(2, 1, 2, 2),
+        sv_latent_dim=(2, 1, 2, 4),
+        softmax_dim=(2, 2),
+        weight_bits=16,
+    ).compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        nand_config=expected_nand_config,
+        hbm_bandwidth_bytes_per_sec=expected_hbm_bw,
+        compile_mode="heuristic-GPU",
+    )
+
+    assert cycles == 26
+    assert seen_matmul_types == ["MLA_QK", "MLA_QK", "MLA_SV"]
 
 
 def test_softmax_compile_and_simulate_supports_time_ns():

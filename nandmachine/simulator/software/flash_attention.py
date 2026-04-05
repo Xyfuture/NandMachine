@@ -27,9 +27,10 @@ from nandmachine.simulator.software.scalesim_runtime_patch import (
 
 apply_scalesim_total_cycles_patch()
 
-MatmulType = Literal["QK", "SV"]
+MatmulType = Literal["QK", "SV", "MLA_QK", "MLA_SV"]
 ReturnUnit = Literal["cycle", "time_ns"]
 ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = True
+SUPPORTED_MATMUL_TYPES: tuple[MatmulType, ...] = ("QK", "SV", "MLA_QK", "MLA_SV")
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,21 @@ class BandwidthConfigKey:
     page_size_bytes: int
     tRead: float
     hbm_bandwidth_bytes_per_sec: float
+
+
+def _validate_matmul_type_or_raise(matmul_type: str) -> None:
+    if matmul_type not in SUPPORTED_MATMUL_TYPES:
+        raise ValueError(f"Unsupported matmul_type: {matmul_type}")
+
+
+def _is_qk_family_matmul_type(matmul_type: MatmulType) -> bool:
+    _validate_matmul_type_or_raise(matmul_type)
+    return matmul_type in ("QK", "MLA_QK")
+
+
+def _is_sv_family_matmul_type(matmul_type: MatmulType) -> bool:
+    _validate_matmul_type_or_raise(matmul_type)
+    return matmul_type in ("SV", "MLA_SV")
 
 
 def _cycle_count_to_time_ns(cycle_count: int, pcb_module: Device) -> int:
@@ -232,9 +248,6 @@ def _simulate_flashattn_main_memory_read_cycle_count(
     qk_mk_or_sv_mk_bytes: int,
     qk_kn_or_sv_nk_bytes: int,
 ) -> int:
-    if matmul_type not in ("QK", "SV"):
-        raise ValueError(f"Unsupported matmul_type: {matmul_type}")
-
     if matmul_type == "QK":
         return _simulate_flashattn_qk_cli_read_cycle_count(
             pcb_module,
@@ -242,12 +255,23 @@ def _simulate_flashattn_main_memory_read_cycle_count(
             qk_mk_bytes=qk_mk_or_sv_mk_bytes,
             qk_kn_bytes=qk_kn_or_sv_nk_bytes,
         )
+    if matmul_type == "MLA_QK":
+        return _simulate_flashattn_qk_cli_read_cycle_count(
+            pcb_module,
+            bandwidth_config_key,
+            qk_mk_bytes=0,
+            qk_kn_bytes=qk_kn_or_sv_nk_bytes,
+        )
+    if matmul_type == "SV":
+        return _simulate_flashattn_sv_cli_read_cycle_count(
+            pcb_module,
+            bandwidth_config_key,
+            sv_nk_bytes=qk_kn_or_sv_nk_bytes,
+        )
+    if matmul_type == "MLA_SV":
+        return 0
 
-    return _simulate_flashattn_sv_cli_read_cycle_count(
-        pcb_module,
-        bandwidth_config_key,
-        sv_nk_bytes=qk_kn_or_sv_nk_bytes,
-    )
+    raise ValueError(f"Unsupported matmul_type: {matmul_type}")
 
 
 def _simulate_flashattn_main_memory_write_cycle_count(
@@ -257,10 +281,8 @@ def _simulate_flashattn_main_memory_write_cycle_count(
     matmul_type: MatmulType,
     sv_mk_bytes: int,
 ) -> int:
-    if matmul_type not in ("QK", "SV"):
-        raise ValueError(f"Unsupported matmul_type: {matmul_type}")
-
-    if matmul_type == "QK" or sv_mk_bytes == 0:
+    _validate_matmul_type_or_raise(matmul_type)
+    if _is_qk_family_matmul_type(matmul_type) or sv_mk_bytes == 0:
         return 0
 
     return _simulate_flashattn_sv_cli_write_cycle_count(
@@ -286,8 +308,7 @@ class FlashAttn_BatchedMatMul_Simulation:
         self.B, self.M, self.K, self.N = dim
         self.weight_bits = weight_bits
         self.word_size = _word_size_from_weight_bits(weight_bits)
-        if matmul_type not in ("QK", "SV"):
-            raise ValueError(f"Unsupported matmul_type: {matmul_type}")
+        _validate_matmul_type_or_raise(matmul_type)
         self.matmul_type = matmul_type
         self.best_mapping = None
         self.best_cycle_count = None
@@ -341,13 +362,13 @@ class FlashAttn_BatchedMatMul_Simulation:
         matmul = MatMul_Simulation(
             self.M, self.K * self.B, self.N, self.weight_bits, self.matmul_type
         )
-        if self.matmul_type == "QK":
+        if _is_qk_family_matmul_type(self.matmul_type):
             output_write_cycle_count = 0 # QK不需要写回最终结果
-        elif self.matmul_type == "SV":
+        elif _is_sv_family_matmul_type(self.matmul_type):
             output_write_cycle_count = _simulate_flashattn_main_memory_write_cycle_count(
                 pcb_module,
                 bandwidth_config_key,
-                matmul_type="SV",
+                matmul_type=self.matmul_type,
                 sv_mk_bytes=(self.B - 1) * self.M * self.N * self.word_size,
             ) # SV需要写回
         else:
@@ -429,7 +450,7 @@ class FlashMLA_BatchedMatMul_Simulation:
         qk_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
             dim=self.qk_latent_dim,
             weight_bits=self.weight_bits,
-            matmul_type="QK",
+            matmul_type="MLA_QK",
         ).compile_and_simulate(
             pcb_module=pcb_module,
             nand_config=nand_config,
@@ -440,7 +461,7 @@ class FlashMLA_BatchedMatMul_Simulation:
         qk_rope_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
             dim=self.qk_rope_dim,
             weight_bits=self.weight_bits,
-            matmul_type="QK",
+            matmul_type="MLA_QK",
         ).compile_and_simulate(
             pcb_module=pcb_module,
             nand_config=nand_config,
@@ -459,7 +480,7 @@ class FlashMLA_BatchedMatMul_Simulation:
         sv_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
             dim=self.sv_latent_dim,
             weight_bits=self.weight_bits,
-            matmul_type="SV",
+            matmul_type="MLA_SV",
         ).compile_and_simulate(
             pcb_module=pcb_module,
             nand_config=nand_config,
@@ -508,8 +529,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             weight_bits=weight_bits,
             word_size=self.word_size,
         )
-        if matmul_type not in ("QK", "SV"):
-            raise ValueError(f"Unsupported matmul_type: {matmul_type}")
+        _validate_matmul_type_or_raise(matmul_type)
         self.matmul_type = matmul_type
         self.output_shape = [self.M, self.N]
         self.look_up_table = None
@@ -594,8 +614,7 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
             self.l0_M_tiling_factor = l0_M_tiling_factor
             self.l0_N_tiling_factor = l0_N_tiling_factor
             self.l0_K_tiling_factor = l0_K_tiling_factor
-            if matmul_type not in ("QK", "SV"):
-                raise ValueError(f"Unsupported matmul_type: {matmul_type}")
+            _validate_matmul_type_or_raise(matmul_type)
             self.matmul_type = matmul_type
             self.dataflow = dataflow
 
@@ -650,25 +669,25 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 total_flop_count / effective_total_vector_flops_per_cycle
             )
 
-            if self.matmul_type == "QK":
+            if _is_qk_family_matmul_type(self.matmul_type):
                 io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
                     pcb_module,
                     bandwidth_config_key,
-                    matmul_type="QK",
+                    matmul_type=self.matmul_type,
                     qk_mk_or_sv_mk_bytes=M * K * self.word_size,
                     qk_kn_or_sv_nk_bytes=K * N * self.word_size,
                 )
-            elif self.matmul_type == "SV":
+            elif _is_sv_family_matmul_type(self.matmul_type):
                 io_cycle_count = _simulate_flashattn_main_memory_read_cycle_count(
                     pcb_module,
                     bandwidth_config_key,
-                    matmul_type="SV",
+                    matmul_type=self.matmul_type,
                     qk_mk_or_sv_mk_bytes=0,
                     qk_kn_or_sv_nk_bytes=K * N * self.word_size,
                 ) + _simulate_flashattn_main_memory_write_cycle_count(
                     pcb_module,
                     bandwidth_config_key,
-                    matmul_type="SV",
+                    matmul_type=self.matmul_type,
                     sv_mk_bytes=M * N * self.word_size,
                 )
             else:
@@ -1557,9 +1576,9 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                     )
                     * M_N_tile_size
                 )
-                if mapping.matmul_type == "QK":
+                if _is_qk_family_matmul_type(mapping.matmul_type):
                     previous_batch_M_N_write_count = 0 # Qk不需要写MN
-                elif mapping.matmul_type == "SV":
+                elif _is_sv_family_matmul_type(mapping.matmul_type):
                     previous_batch_M_N_write_count = np.sum(
                         (previous_batch_Write_M_N * (~current_batch_Read_M_N))
                         * M_N_tile_size
@@ -1568,11 +1587,11 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                     raise ValueError(f"Unsupported matmul_type: {mapping.matmul_type}")
 
                 # read current batch while compute and write previous batch. 先统计读写元素量，再按字节宽度和 L2 带宽折算成 IO 周期，供后面的流水重叠公式使用
-                if mapping.matmul_type == "QK":
+                if _is_qk_family_matmul_type(mapping.matmul_type):
                     current_batch_read_count = (
                         current_batch_M_K_read_count + current_batch_K_N_read_count
                     ) # QK只读MK和KN
-                elif mapping.matmul_type == "SV":
+                elif _is_sv_family_matmul_type(mapping.matmul_type):
                     current_batch_read_count = current_batch_K_N_read_count # SV只读KN
                 else:
                     raise ValueError(
@@ -1606,9 +1625,9 @@ class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N�
                 active_l1_tile_list = []
 
             # last batch's compute and write. 最后一批的计算和写回通常无法和下一批的读取重叠，所以单独算cycle count
-            if mapping.matmul_type == "QK":
+            if _is_qk_family_matmul_type(mapping.matmul_type):
                 last_batch_write_cycle_count = 0 # QK不需要写
-            elif mapping.matmul_type == "SV":
+            elif _is_sv_family_matmul_type(mapping.matmul_type):
                 last_batch_write_cycle_count = ceil(
                     np.sum(previous_batch_Write_M_N * M_N_tile_size)
                     * word_size
