@@ -403,6 +403,73 @@ class FlashAttn_BatchedMatMul_Simulation:
     compile_and_simulate.cache_clear = _compile_and_simulate_result.cache_clear
 
 
+class FlashMLA_BatchedMatMul_Simulation:
+    def __init__(
+        self,
+        qk_latent_dim: tuple[int, int, int, int],
+        qk_rope_dim: tuple[int, int, int, int],
+        sv_latent_dim: tuple[int, int, int, int],
+        softmax_dim: tuple[int, int],
+        weight_bits: int = 16,
+    ) -> None:
+        self.qk_latent_dim = qk_latent_dim
+        self.qk_rope_dim = qk_rope_dim
+        self.sv_latent_dim = sv_latent_dim
+        self.softmax_dim = softmax_dim
+        self.weight_bits = weight_bits
+
+    def compile_and_simulate(
+        self,
+        pcb_module: Device,
+        nand_config: NandConfig,
+        hbm_bandwidth_bytes_per_sec: float,
+        compile_mode: str = "exhaustive",
+        return_unit: ReturnUnit = "cycle",
+    ) -> int:
+        qk_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
+            dim=self.qk_latent_dim,
+            weight_bits=self.weight_bits,
+            matmul_type="QK",
+        ).compile_and_simulate(
+            pcb_module=pcb_module,
+            nand_config=nand_config,
+            hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+            compile_mode=compile_mode,
+            return_unit=return_unit,
+        )
+        qk_rope_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
+            dim=self.qk_rope_dim,
+            weight_bits=self.weight_bits,
+            matmul_type="QK",
+        ).compile_and_simulate(
+            pcb_module=pcb_module,
+            nand_config=nand_config,
+            hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+            compile_mode=compile_mode,
+            return_unit=return_unit,
+        )
+        softmax_time = Softmax_Simulation(
+            dim=self.softmax_dim,
+            weight_bits=self.weight_bits,
+        ).compile_and_simulate(
+            pcb_module=pcb_module,
+            compile_mode=compile_mode,
+            return_unit=return_unit,
+        )
+        sv_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
+            dim=self.sv_latent_dim,
+            weight_bits=self.weight_bits,
+            matmul_type="SV",
+        ).compile_and_simulate(
+            pcb_module=pcb_module,
+            nand_config=nand_config,
+            hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+            compile_mode=compile_mode,
+            return_unit=return_unit,
+        )
+        return qk_latent_time + qk_rope_time + softmax_time + sv_latent_time
+
+
 class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N的矩阵
     @dataclass(frozen=True)
     class PrecisionContext:

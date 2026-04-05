@@ -303,7 +303,7 @@ def test_build_gqa_kernel_param_recomputes_local_block_shape_for_tp():
     assert macro_op_list[0].softmax_shape == (8, 16)
 
 
-def test_build_gqa_kernel_param_rejects_non_unit_dp():
+def test_build_gqa_kernel_param_splits_kv_blocks_for_dp():
     module = Attention(
         num_heads=8,
         head_dim=8,
@@ -314,13 +314,18 @@ def test_build_gqa_kernel_param_rejects_non_unit_dp():
     )
     graph_meta = _build_attention_graph_meta(
         DenseParallelConfig(num_ranks=2, tp_size=1, dp_size=2),
+        memory_backend="hbm",
     )
 
-    with pytest.raises(
-        ValueError,
-        match="Attention build_gqa_kernel_param only supports dp_size == 1, got 2",
-    ):
-        module.build_gqa_kernel_param(graph_meta)
+    params = module.build_gqa_kernel_param(graph_meta)
+    macro_op_list = module.macro_code_gen(graph_meta)
+
+    assert params[:6] == (2, 4, 8, 2, 8, 1024)
+    assert len(macro_op_list) == 1
+    assert isinstance(macro_op_list[0], FlashAttnOp)
+    assert macro_op_list[0].qk_bmm_shape == (8, 2, 8, 8)
+    assert macro_op_list[0].sv_bmm_shape == (8, 2, 8, 8)
+    assert macro_op_list[0].softmax_shape == (16, 8)
 
 
 def test_nx_tracer_keeps_hook_modules_as_call_module_nodes():

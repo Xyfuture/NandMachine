@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 
 import torch.fx as fx
 from torch.fx import GraphModule
 
-from nandmachine.commands.macro import MacroOp
+from nandmachine.commands.macro import MacroOp, SramPrefetch, SramPrefetchRelease
 from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.frontend.core.passes.base import GraphPass
 
@@ -35,6 +36,17 @@ class CodeGenPass(GraphPass):
 
             node_macro_ops = hook_module.macro_code_gen(nx_graph_meta)
             validated_ops = self._validate_macro_ops(node, node_macro_ops)
+            node.meta['marco_op_list'] = copy.deepcopy(validated_ops)
+            # 打补丁，解决 all reduce 的问题
+            last_non_release_op = lambda ops: next(
+                op for op in reversed(ops) if not isinstance(op, SramPrefetchRelease)
+            )
+            first_non_prefetch_op = lambda ops: next(
+                op for op in ops if not isinstance(op, SramPrefetch)
+            )
+            if macro_op_list and validated_ops:
+                first_non_prefetch_op(validated_ops).add_inputs(last_non_release_op(macro_op_list))
+
             macro_op_list.extend(validated_ops)
 
             logger.info(
@@ -42,7 +54,7 @@ class CodeGenPass(GraphPass):
                 node.name,
                 len(validated_ops),
             )
-            node.meta['marco_op_list'] = validated_ops
+            
  
         graph_meta_dict[self.MACRO_OP_LIST_META_KEY] = macro_op_list
         return graph

@@ -11,6 +11,7 @@ from nandmachine.commands.macro import (
     AllGatherOp,
     AllReduceOp,
     FlashAttnOp,
+    FlashMLAOp,
     MacroOp,
     MatMulOp,
     ReduceScatterOp,
@@ -29,7 +30,11 @@ from nandmachine.simulator.software.communication_primitives_of_dense import (
 from nandmachine.simulator.software.communication_primitives_of_MoE import (
     AllToAllPrimitive_Simulation,
 )
-from nandmachine.simulator.software.flash_attention import FlashAttn_BatchedMatMul_Simulation, Softmax_Simulation
+from nandmachine.simulator.software.flash_attention import (
+    FlashAttn_BatchedMatMul_Simulation,
+    FlashMLA_BatchedMatMul_Simulation,
+    Softmax_Simulation,
+)
 from nandmachine.simulator.software.matmul import MatMul_Simulation
 
 
@@ -68,6 +73,22 @@ def _format_macro_op_trace_name(macro_op: MacroOp) -> str:
             "FlashAttn["
             f"id={macro_op.id},"
             f"qk_b={qk_b},qk_m={qk_m},qk_k={qk_k},qk_n={qk_n},"
+            f"sv_b={sv_b},sv_m={sv_m},sv_n={sv_n},sv_k={sv_k},"
+            f"softmax_m={softmax_m},softmax_n={softmax_n},"
+            f"bits={macro_op.weight_bits}"
+            "]"
+        )
+
+    if isinstance(macro_op, FlashMLAOp):
+        latent_b, latent_m, latent_k, latent_n = macro_op.qk_latent_bmm_input_shape
+        rope_b, rope_m, rope_k, rope_n = macro_op.qk_rope_bmm_input_shape
+        sv_b, sv_m, sv_n, sv_k = macro_op.sv_latent_bmm_input_shape
+        softmax_m, softmax_n = macro_op.softmax_input_shape
+        return (
+            "FlashMLA["
+            f"id={macro_op.id},"
+            f"latent_b={latent_b},latent_m={latent_m},latent_k={latent_k},latent_n={latent_n},"
+            f"rope_b={rope_b},rope_m={rope_m},rope_k={rope_k},rope_n={rope_n},"
             f"sv_b={sv_b},sv_m={sv_m},sv_n={sv_n},sv_k={sv_k},"
             f"softmax_m={softmax_m},softmax_n={softmax_n},"
             f"bits={macro_op.weight_bits}"
@@ -269,6 +290,8 @@ class ComputeEngine(SimModule):
             SimModule.wait(macro_op_slot.finish_event)
             macro_op_slot.is_finished = True
 
+            print(macro_op_slot.payload)
+
             
 
     def _validate_flashattn_shapes(self, macro_op: FlashAttnOp) -> None: # flashattn中的矩阵shape合法性检查
@@ -322,6 +345,59 @@ class ComputeEngine(SimModule):
             raise ValueError(
                 f"VectorOp has non-positive dims: {macro_op.vector_shape}"
             )
+
+    def _validate_flashmla_shapes(self, macro_op: FlashMLAOp) -> None:
+        latent_b, latent_m, latent_k, latent_n = macro_op.qk_latent_bmm_input_shape
+        rope_b, rope_m, rope_k, rope_n = macro_op.qk_rope_bmm_input_shape
+        sv_b, sv_m, sv_n, sv_k = macro_op.sv_latent_bmm_input_shape
+        softmax_m, softmax_n = macro_op.softmax_input_shape
+
+        dims = {
+            "latent_b": latent_b,
+            "latent_m": latent_m,
+            "latent_k": latent_k,
+            "latent_n": latent_n,
+            "rope_b": rope_b,
+            "rope_m": rope_m,
+            "rope_k": rope_k,
+            "rope_n": rope_n,
+            "sv_b": sv_b,
+            "sv_m": sv_m,
+            "sv_n": sv_n,
+            "sv_k": sv_k,
+            "softmax_m": softmax_m,
+            "softmax_n": softmax_n,
+        }
+        invalid_dims = [f"{name}={value}" for name, value in dims.items() if value <= 0]
+        if invalid_dims:
+            raise ValueError(
+                "FlashMLAOp has non-positive dims: " + ", ".join(invalid_dims)
+            )
+
+        shape_errors = []
+        if (rope_b, rope_m, rope_n) != (latent_b, latent_m, latent_n):
+            shape_errors.append(
+                "qk_rope_bmm_shape batch dims must match qk_latent_bmm_shape"
+            )
+        valid_softmax_shapes = {
+            (latent_m, latent_n),
+            (latent_b * latent_m, latent_n),
+        }
+        # if (softmax_m, softmax_n) not in valid_softmax_shapes:
+        #     shape_errors.append(
+        #         "softmax_shape="
+        #         f"{macro_op.softmax_input_shape} must match either "
+        #         f"(M,N)=({latent_m},{latent_n}) or flattened batched shape "
+        #         f"({latent_b * latent_m},{latent_n})"
+        #     )
+        if (sv_b, sv_m, sv_n, sv_k) != (latent_b, latent_m, latent_n, latent_k):
+            shape_errors.append(
+                "sv_latent_bmm_shape must match "
+                f"(B,M,N,K)=({latent_b},{latent_m},{latent_n},{latent_k})"
+            )
+
+        if shape_errors:
+            raise ValueError("FlashMLAOp shape mismatch: " + "; ".join(shape_errors))
 
     def _estimate_vector_cycles(self, macro_op: VectorOp) -> float:
         self._validate_vector_shape(macro_op)
@@ -409,6 +485,25 @@ class ComputeEngine(SimModule):
             )
             flashattn_time_ns = qk_bmm_time_ns + softmax_time_ns + sv_bmm_time_ns
             return _normalize_time_ns(flashattn_time_ns, "flashattn_time_ns")
+
+        if isinstance(macro_op, FlashMLAOp):
+            # self._validate_flashmla_shapes(macro_op)
+
+            flashmla_sim = FlashMLA_BatchedMatMul_Simulation(
+                qk_latent_dim=macro_op.qk_latent_bmm_input_shape,
+                qk_rope_dim=macro_op.qk_rope_bmm_input_shape,
+                sv_latent_dim=macro_op.sv_latent_bmm_input_shape,
+                softmax_dim=macro_op.softmax_input_shape,
+                weight_bits=macro_op.weight_bits,
+            )
+            flashmla_time_ns = flashmla_sim.compile_and_simulate(
+                pcb_module=self.device,
+                nand_config=self.config,
+                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
+                compile_mode=self.compile_mode,
+                return_unit="time_ns",
+            )
+            return _normalize_time_ns(flashmla_time_ns, "flashmla_time_ns")
 
         if isinstance(macro_op, VectorOp):
             vector_cycles = self._estimate_vector_cycles(macro_op)

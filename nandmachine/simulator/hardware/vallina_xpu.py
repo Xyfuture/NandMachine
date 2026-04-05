@@ -9,6 +9,7 @@ from perf_tracer.tracer import TrackInfo
 
 from nandmachine.commands.macro import (
     FlashAttnOp,
+    FlashMLAOp,
     MacroOp,
     MatMulOp,
     SramPrefetch,
@@ -85,6 +86,12 @@ class VallinaComputeEngine(ComputeEngine):
             return _normalize_time_ns(
                 execute_time_ns + 2 * self.config.tRead,
                 "vallina_flashattn_time_ns",
+            )
+
+        if isinstance(macro_op, FlashMLAOp):
+            return _normalize_time_ns(
+                execute_time_ns + 2 * self.config.tRead,
+                "vallina_flashmla_time_ns",
             )
 
         return execute_time_ns

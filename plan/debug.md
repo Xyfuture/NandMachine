@@ -23,6 +23,9 @@
     - 需要提前定义 FlashMLA 的 macro op
 - 能够类似 nandmachine/simulator/software/flash_attention.py 支持对 flashmla 的仿真
 - 编写一个类似 frontend_pipeline_moe.ipynb 的测试 pipeline 
+- 你考虑一下 build kv cache 部分是否需要同步的改动
+- MLA 的计算方式要采用 absorb 之后的形式
+- 拿不准的地方要和我讨论
 
 
 
@@ -79,3 +82,13 @@ nand 部分添加一个 feature ，等待容量空闲的特性
 
 
 你看一下 nandmachine/frontend/utlis.py 中的关于 build kv cache 的逻辑，进行重写，只计算整体的 batch 情况，不区分并行的事情，并行相关的处理已经放到后面进行了，不要在因为 TP 之类的拆分 kv cache 了
+
+
+
+
+仿照 dense_node_pipeline.ipynb ， 写一个针对 deepseek v3 测试的 ipynb ，输出每个 node 的信息，同时输出 trace 文件
+
+
+
+mla 中有一个问题
+bmm 中的不同的 matmul 实际上是共享 一个 input 的 / 需要修正这个 bug 

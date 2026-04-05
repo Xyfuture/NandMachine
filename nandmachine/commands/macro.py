@@ -112,6 +112,47 @@ class FlashAttnOp(MacroOp):
 
 
 @dataclass
+class FlashMLAOp(MacroOp):
+    qk_latent_bmm_shape: tuple[int, int, int, int]
+    qk_rope_bmm_shape: tuple[int, int, int, int]
+    sv_latent_bmm_shape: tuple[int, int, int, int]
+    softmax_shape: tuple[int, int]
+    weight_bits: int
+
+    @property
+    def shape(
+        self,
+    ) -> tuple[
+        tuple[int, int, int, int],
+        tuple[int, int, int, int],
+        tuple[int, int, int, int],
+        tuple[int, int],
+    ]:
+        return (
+            self.qk_latent_bmm_shape,
+            self.qk_rope_bmm_shape,
+            self.sv_latent_bmm_shape,
+            self.softmax_shape,
+        )
+
+    @property
+    def qk_latent_bmm_input_shape(self) -> tuple[int, int, int, int]:
+        return self.qk_latent_bmm_shape
+
+    @property
+    def qk_rope_bmm_input_shape(self) -> tuple[int, int, int, int]:
+        return self.qk_rope_bmm_shape
+
+    @property
+    def sv_latent_bmm_input_shape(self) -> tuple[int, int, int, int]:
+        return self.sv_latent_bmm_shape
+
+    @property
+    def softmax_input_shape(self) -> tuple[int, int]:
+        return self.softmax_shape
+
+
+@dataclass
 class VectorOp(MacroOp):
     vector_op_type: str
     vector_shape: list[int]
@@ -161,6 +202,7 @@ __all__ = [
     "SramPrefetchRelease",
     "MatMulOp",
     "FlashAttnOp",
+    "FlashMLAOp",
     "VectorOp",
     "AllReduceOp",
     "AllGatherOp",

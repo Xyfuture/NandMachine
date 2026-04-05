@@ -12,11 +12,18 @@ from nandmachine.commands.macro import (
     AllReduceOp,
     MacroOp,
     MatMulOp,
+    SramPrefetch,
+    SramPrefetchRelease,
     VectorOp,
 )
 from nandmachine.config.inference_config import DenseParallelConfig, MoEParallelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta
-from nandmachine.kernels.attention import GQAHBMKernel, GQANandKernel
+from nandmachine.kernels.attention import (
+    GQAHBMKernel,
+    GQANandKernel,
+    MLAHBMKernel,
+    MLANandKernel,
+)
 from nandmachine.kernels.lieanr import LinearHBMKernel, LinearNandKernel
 
 if TYPE_CHECKING:
@@ -360,12 +367,7 @@ class Attention(HookModuleBase):
             raise ValueError(
                 f"Attention dp_size must be {actual_dp_size}, got {self.dp_size}"
             )
-        if self.dp_size != 1:
-            raise ValueError(
-                f"Attention build_gqa_kernel_param only supports dp_size == 1, got {self.dp_size}"
-            )
-
-        
+        local_batch_size = math.ceil(graph_meta.batch_size/self.dp_size)
 
         group_size = divide(self.local_num_heads, self.local_num_kv_heads)
         num_kv_heads = self.local_num_kv_heads
@@ -384,7 +386,7 @@ class Attention(HookModuleBase):
         per_token_kv_bytes = ceil_div(per_token_kv_value_count * kv_cache_bits, 8)
         kv_block_size:int = ceil_div(block_bytes, per_token_kv_bytes)
         local_total_kv_value_count = (
-            inference_config.batch_size
+            local_batch_size
             * peak_sequence_length
             * num_kv_heads
             * head_dim
@@ -409,9 +411,192 @@ class Attention(HookModuleBase):
             nand_config,
         )
 
-    
 
+class MLAAttention(HookModuleBase):
+    def __init__(
+        self,
+        num_heads: int,
+        q_lora_rank: int,
+        kv_lora_rank: int,
+        qk_nope_head_dim: int,
+        qk_rope_head_dim: int,
+        v_head_dim: int,
+        tp_size: int,
+        dp_size: int,
+    ) -> None:
+        super().__init__()
+        if num_heads <= 0:
+            raise ValueError(f"num_heads must be > 0, got {num_heads}")
+        if q_lora_rank <= 0:
+            raise ValueError(f"q_lora_rank must be > 0, got {q_lora_rank}")
+        if kv_lora_rank <= 0:
+            raise ValueError(f"kv_lora_rank must be > 0, got {kv_lora_rank}")
+        if qk_nope_head_dim <= 0:
+            raise ValueError(f"qk_nope_head_dim must be > 0, got {qk_nope_head_dim}")
+        if qk_rope_head_dim <= 0:
+            raise ValueError(f"qk_rope_head_dim must be > 0, got {qk_rope_head_dim}")
+        if v_head_dim <= 0:
+            raise ValueError(f"v_head_dim must be > 0, got {v_head_dim}")
+        if tp_size <= 0:
+            raise ValueError(f"tp_size must be > 0, got {tp_size}")
+        if dp_size <= 0:
+            raise ValueError(f"dp_size must be > 0, got {dp_size}")
+        if num_heads % tp_size != 0:
+            raise ValueError(
+                f"num_heads must be divisible by tp_size, got {num_heads} and {tp_size}"
+            )
 
+        self.num_heads = num_heads
+        self.q_lora_rank = q_lora_rank
+        self.kv_lora_rank = kv_lora_rank
+        self.qk_nope_head_dim = qk_nope_head_dim
+        self.qk_rope_head_dim = qk_rope_head_dim
+        self.v_head_dim = v_head_dim
+        self.tp_size = tp_size
+        self.dp_size = dp_size
+        self.local_num_heads = divide(num_heads, tp_size)
+
+    def forward(
+        self,
+        q_nope: torch.Tensor,
+        q_rope: torch.Tensor,
+        c_kv_cache: torch.Tensor,
+        k_rope_cache: torch.Tensor,
+    ) -> torch.Tensor:
+        del q_rope, c_kv_cache, k_rope_cache
+        return q_nope.new_zeros((*q_nope.shape[:-1], self.v_head_dim))
+
+    def macro_code_gen(self, graph_meta: NxGraphMeta) -> list[MacroOp]:
+        (
+            local_batch_size,
+            local_num_kv_blocks,
+            kv_block_size_tokens,
+            block_bytes,
+            kv_cache_bits,
+            input_bits,
+            nand_config,
+        ) = self.build_mla_kernel_param(graph_meta)
+
+        absorb_matmul = MatMulOp(
+            (
+                local_batch_size * self.local_num_heads,
+                self.qk_nope_head_dim,
+                self.kv_lora_rank,
+            ),
+            weight_bits=graph_meta.inference_config.weight_bits,
+        )
+
+        kernel_params = (
+            self.local_num_heads,
+            local_batch_size,
+            local_num_kv_blocks,
+            self.kv_lora_rank,
+            self.qk_rope_head_dim,
+            kv_block_size_tokens,
+            block_bytes,
+            kv_cache_bits,
+            input_bits,
+            nand_config,
+        )
+        backend = get_kernel_backend(graph_meta)
+        if backend == "nand":
+            kernel_macro_ops = MLANandKernel.lowering(*kernel_params)
+        elif backend == "hbm":
+            kernel_macro_ops = MLAHBMKernel.lowering(*kernel_params)
+        else:
+            raise AssertionError(f"Unhandled memory_backend: {backend}")
+
+        if not kernel_macro_ops:
+            raise ValueError("MLA kernel must return at least one macro op")
+        kernel_macro_ops[0].add_inputs(absorb_matmul)
+        tail_dependency = next(
+            (
+                macro_op
+                for macro_op in reversed(kernel_macro_ops)
+                if not isinstance(macro_op, SramPrefetchRelease)
+            ),
+            None,
+        )
+        if tail_dependency is None:
+            raise ValueError("MLA kernel must return a non-release compute op")
+
+        up_proj_matmul = MatMulOp(
+            (
+                local_batch_size * self.local_num_heads,
+                self.kv_lora_rank,
+                self.v_head_dim,
+            ),
+            weight_bits=graph_meta.inference_config.weight_bits,
+        ).with_inputs(tail_dependency)
+
+        return [absorb_matmul, *kernel_macro_ops, up_proj_matmul]
+
+    def build_mla_kernel_param(self, graph_meta: NxGraphMeta):
+        model_config = graph_meta.model_config
+        inference_config = graph_meta.inference_config
+
+        if model_config.attention_type != "mla":
+            raise ValueError(
+                f"MLAAttention only supports mla, got {model_config.attention_type}"
+            )
+        if model_config.num_attention_heads != self.num_heads:
+            raise ValueError("MLAAttention num_heads do not match model_config")
+        if model_config.kv_lora_rank != self.kv_lora_rank:
+            raise ValueError("MLAAttention kv_lora_rank does not match model_config")
+        if model_config.qk_nope_head_dim != self.qk_nope_head_dim:
+            raise ValueError("MLAAttention qk_nope_head_dim does not match model_config")
+        if model_config.qk_rope_head_dim != self.qk_rope_head_dim:
+            raise ValueError("MLAAttention qk_rope_head_dim does not match model_config")
+        if model_config.v_head_dim != self.v_head_dim:
+            raise ValueError("MLAAttention v_head_dim does not match model_config")
+
+        parallel_config = inference_config.parallel_config
+        if not isinstance(parallel_config, MoEParallelConfig):
+            raise ValueError(
+                "MLAAttention requires MoEParallelConfig to derive attn_dp/attn_tp"
+            )
+        if parallel_config.attn_dp_size != self.dp_size:
+            raise ValueError(
+                f"MLAAttention dp_size must be {parallel_config.attn_dp_size}, got {self.dp_size}"
+            )
+        if parallel_config.attn_tp_size != self.tp_size:
+            raise ValueError(
+                f"MLAAttention tp_size must be {parallel_config.attn_tp_size}, got {self.tp_size}"
+            )
+
+        local_batch_size = math.ceil(graph_meta.batch_size/ self.dp_size)
+        peak_sequence_length = (
+            inference_config.input_sequence_length + inference_config.output_sequence_length
+        )
+        per_token_kv_values = self.kv_lora_rank + self.qk_rope_head_dim
+        per_token_kv_bytes = ceil_div(
+            per_token_kv_values * inference_config.kv_cache_bits,
+            8,
+        )
+        if per_token_kv_bytes <= 0:
+            raise ValueError("MLA per-token KV cache bytes must be > 0")
+
+        block_bytes = inference_config.kv_block_size_bytes
+        kv_block_size_tokens = ceil_div(block_bytes, per_token_kv_bytes)
+        local_total_kv_bytes = local_batch_size * peak_sequence_length * per_token_kv_bytes
+        local_num_kv_blocks = (
+            ceil_div(local_total_kv_bytes, block_bytes) if local_total_kv_bytes > 0 else 0
+        )
+        if local_num_kv_blocks <= 0:
+            raise ValueError(
+                "MLAAttention requires at least one local KV block, "
+                f"got local_total_kv_bytes={local_total_kv_bytes}"
+            )
+
+        return (
+            local_batch_size,
+            local_num_kv_blocks,
+            kv_block_size_tokens,
+            block_bytes,
+            inference_config.kv_cache_bits,
+            inference_config.activation_bits,
+            graph_meta.nand_config,
+        )
 
 
 class SiluAndMul(HookModuleBase):
@@ -645,14 +830,30 @@ class FusedMoE(HookModuleBase):
             op.add_inputs(macro_op_list[-1])
             macro_op_list.append(op)
 
+        last_non_release_op = lambda ops: next(
+            op for op in reversed(ops) if not isinstance(op, SramPrefetchRelease)
+        )
+        first_non_prefetch_op = lambda ops: next(
+            op for op in ops if not isinstance(op, SramPrefetch)
+        )
+
+        # 依赖上一条指令，避免 all to all 接不起来
+        dep_previous:bool = False
         for expert in self.experts:
             op_list = expert.macro_code_gen(expert_graph_meta)
-            op_list[0].add_inputs(macro_op_list[-1])
+            
+            if not dep_previous:
+                first_non_prefetch_op(op_list).add_inputs(last_non_release_op(macro_op_list))
+                dep_previous = True
+
             macro_op_list.extend(op_list)
+            
+
+    
 
         if ffn_world_size != 1:
             op = self._build_post_expert_communication(graph_meta)
-            op.add_inputs(macro_op_list[-1])
+            op.add_inputs(last_non_release_op(macro_op_list))
             macro_op_list.append(op)
 
         macro_op_list.append(
@@ -660,8 +861,8 @@ class FusedMoE(HookModuleBase):
                 vector_op_type="moe_weighted_sum",
                 vector_shape=[graph_meta.batch_size, self.hidden_size],
                 weight_bits=graph_meta.inference_config.activation_bits,
-            ).with_inputs(macro_op_list[-1])
-        )
+            ).with_inputs(last_non_release_op(macro_op_list))
+        ) # 先不加上去了
 
         return macro_op_list
 

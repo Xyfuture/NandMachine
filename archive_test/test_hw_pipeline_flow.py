@@ -276,7 +276,7 @@ def test_notebook_entrypoints_use_macro_sim_result_and_drop_weight_bits():
             for cell in simulator_config_cells
         )
         assert all(
-            "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_bytes_per_sec\"]"
+            "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_GBps\"] * 10**9"
             in cell
             for cell in runtime_simulator_config_cells
         )
@@ -306,7 +306,7 @@ def test_hw_pipeline_notebook_passes_hbm_bandwidth_to_xpu():
     assert runtime_config_cells
     assert xpu_cells
     assert all(
-        "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_bytes_per_sec\"]"
+        "\"hbm_bandwidth_bytes_per_sec\": simulator_config[\"hbm_bandwidth_GBps\"] * 10**9"
         in cell
         for cell in runtime_config_cells
     )
@@ -316,3 +316,31 @@ def test_hw_pipeline_notebook_passes_hbm_bandwidth_to_xpu():
         for cell in runtime_config_cells
     )
     assert all("xpu = xPU(nand_config, **runtime_simulator_config)" in cell for cell in xpu_cells)
+
+
+@pytest.mark.parametrize(
+    ("notebook_name", "trace_dir"),
+    [
+        ("deepseek_v3_node_pipeline.ipynb", "trace/deepseek_v3"),
+        ("dense_node_pipeline.ipynb", "trace/dense"),
+        ("qwen3_moe_node_pipeline.ipynb", "trace/qwen3_moe"),
+    ],
+)
+def test_node_pipelines_export_node_level_and_full_traces(
+    notebook_name: str, trace_dir: str
+):
+    repo_root = Path(__file__).resolve().parents[1]
+    notebook = json.loads((repo_root / notebook_name).read_text())
+    sources = ["".join(cell.get("source", [])) for cell in notebook["cells"]]
+
+    assert any(f'TRACE_DIR = Path("{trace_dir}")' in source for source in sources)
+    assert any('FULL_TRACE_FILE_NAME = "full_simulation.json"' in source for source in sources)
+    assert any("def run_macro_ops_with_trace(" in source for source in sources)
+    assert any("def full_trace_file_path() -> Path:" in source for source in sources)
+    assert any("enable_trace=True" in source for source in sources)
+    assert any("full_trace_path = full_trace_file_path()" in source for source in sources)
+    assert any("full_sim_result = run_macro_ops_with_trace(" in source for source in sources)
+    assert any('node.meta.get("marco_op_list", [])' in source for source in sources)
+    assert any("current_trace_path = trace_file_path(node_index, node)" in source for source in sources)
+    assert any('"full_simulation": full_sim_summary' in source for source in sources)
+    assert any("trace_complete_event_categories" in source for source in sources)

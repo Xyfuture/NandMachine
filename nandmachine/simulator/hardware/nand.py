@@ -82,10 +82,14 @@ class NandSimCoreSimple:
         # plane level 并行 
         # latency_ns = math.ceil(access_num_pages/(self.nand_config.num_plane*self.nand_config.num_channels)) * self.nand_config.tRead
         
-        if (access_num_pages < self.nand_config.num_plane * self.nand_config.num_channels)
+        if access_num_pages < self.nand_config.num_plane * self.nand_config.num_channels:
             latency_ns = self.nand_config.tRead
         else:
-            latency_ns = access_num_pages/(self.nand_config.num_plane*self.nand_config.num_channels) * self.nand_config.tRead
+            latency_ns = (
+                access_num_pages
+                / (self.nand_config.num_plane * self.nand_config.num_channels)
+                * self.nand_config.tRead
+            )
         
         finish_time_ns = latency_ns + arrive_time_ns
         return finish_time_ns

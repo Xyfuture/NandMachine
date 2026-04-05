@@ -24,6 +24,22 @@ def _get_optional_config_attr(
     return getattr(config, attr_name, default)
 
 
+def _require_positive_int(value: Any, name: str) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0, got {value}")
+    return value
+
+
+def _require_non_negative_int(value: Any, name: str) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+    return value
+
+
 @dataclass
 class Qwen3ModelConfig(ModelConfigBase):
     hidden_size: int
@@ -203,9 +219,151 @@ class LlamaModelConfig(ModelConfigBase):
             attention_type=data.get("attention_type", "gqa"),
         )
 
+
+@dataclass
+class DeepseekV3ModelConfig(ModelConfigBase):
+    hidden_size: int
+    num_attention_heads: int
+    max_position_embeddings: int
+    intermediate_size: int
+    moe_intermediate_size: int
+    num_hidden_layers: int
+    num_experts_per_tok: int
+    n_routed_experts: int
+    q_lora_rank: int
+    kv_lora_rank: int
+    qk_nope_head_dim: int
+    qk_rope_head_dim: int
+    v_head_dim: int
+    rms_norm_eps: float
+    attention_bias: bool
+    rope_theta: float
+    hidden_act: str
+    num_nextn_predict_layers: int
+    attention_type: str = field(default="mla", kw_only=True)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DeepseekV3ModelConfig":
+        required_fields = (
+            "hidden_size",
+            "num_attention_heads",
+            "max_position_embeddings",
+            "intermediate_size",
+            "moe_intermediate_size",
+            "num_hidden_layers",
+            "num_experts_per_tok",
+            "n_routed_experts",
+            "q_lora_rank",
+            "kv_lora_rank",
+            "qk_nope_head_dim",
+            "qk_rope_head_dim",
+            "v_head_dim",
+            "rms_norm_eps",
+            "attention_bias",
+            "rope_theta",
+            "hidden_act",
+            "num_nextn_predict_layers",
+        )
+        missing_fields = [field_name for field_name in required_fields if field_name not in data]
+        if missing_fields:
+            raise KeyError(f"DeepseekV3 config missing required fields: {missing_fields}")
+
+        model_type = data.get("model_type")
+        if model_type != "deepseek_v3":
+            raise ValueError(f"Unsupported model_type: {model_type}")
+
+        architectures = data.get("architectures")
+        if architectures is not None and "DeepseekV3ForCausalLM" not in architectures:
+            raise ValueError(f"Unsupported architectures: {architectures}")
+
+        attention_type = data.get("attention_type", "mla")
+        if attention_type != "mla":
+            raise ValueError(f"DeepseekV3 requires attention_type='mla', got {attention_type}")
+
+        hidden_act = data["hidden_act"]
+        if hidden_act != "silu":
+            raise ValueError(f"Unsupported hidden_act: {hidden_act}")
+
+        num_nextn_predict_layers = _require_positive_int(
+            data["num_nextn_predict_layers"],
+            "num_nextn_predict_layers",
+        )
+        if num_nextn_predict_layers != 1:
+            raise ValueError(
+                "DeepseekV3 only supports num_nextn_predict_layers == 1, "
+                f"got {num_nextn_predict_layers}"
+            )
+
+        hidden_size = _require_positive_int(data["hidden_size"], "hidden_size")
+        num_attention_heads = _require_positive_int(
+            data["num_attention_heads"],
+            "num_attention_heads",
+        )
+        qk_nope_head_dim = _require_positive_int(
+            data["qk_nope_head_dim"],
+            "qk_nope_head_dim",
+        )
+        qk_rope_head_dim = _require_positive_int(
+            data["qk_rope_head_dim"],
+            "qk_rope_head_dim",
+        )
+        if hidden_size % num_attention_heads != 0:
+            raise ValueError(
+                "hidden_size must be divisible by num_attention_heads, "
+                f"got hidden_size={hidden_size}, num_attention_heads={num_attention_heads}"
+            )
+
+        n_routed_experts = _require_positive_int(
+            data["n_routed_experts"],
+            "n_routed_experts",
+        )
+        num_experts_per_tok = _require_positive_int(
+            data["num_experts_per_tok"],
+            "num_experts_per_tok",
+        )
+        if num_experts_per_tok > n_routed_experts:
+            raise ValueError(
+                "num_experts_per_tok must be <= n_routed_experts, "
+                f"got {num_experts_per_tok} > {n_routed_experts}"
+            )
+
+        num_hidden_layers = _require_positive_int(data["num_hidden_layers"], "num_hidden_layers")
+
+        return cls(
+            hidden_size=hidden_size,
+            num_attention_heads=num_attention_heads,
+            max_position_embeddings=_require_positive_int(
+                data["max_position_embeddings"],
+                "max_position_embeddings",
+            ),
+            intermediate_size=_require_positive_int(
+                data["intermediate_size"],
+                "intermediate_size",
+            ),
+            moe_intermediate_size=_require_positive_int(
+                data["moe_intermediate_size"],
+                "moe_intermediate_size",
+            ),
+            num_hidden_layers=num_hidden_layers,
+            num_experts_per_tok=num_experts_per_tok,
+            n_routed_experts=n_routed_experts,
+            q_lora_rank=_require_positive_int(data["q_lora_rank"], "q_lora_rank"),
+            kv_lora_rank=_require_positive_int(data["kv_lora_rank"], "kv_lora_rank"),
+            qk_nope_head_dim=qk_nope_head_dim,
+            qk_rope_head_dim=qk_rope_head_dim,
+            v_head_dim=_require_positive_int(data["v_head_dim"], "v_head_dim"),
+            rms_norm_eps=float(data["rms_norm_eps"]),
+            attention_bias=bool(data["attention_bias"]),
+            rope_theta=float(data["rope_theta"]),
+            hidden_act=hidden_act,
+            num_nextn_predict_layers=num_nextn_predict_layers,
+            attention_type=attention_type,
+        )
+
 __all__ = [
     "ModelConfigBase",
     "Qwen3ModelConfig",
     "Qwen3MoEModelConfig",
     "LlamaModelConfig",
+    "DeepseekV3ModelConfig",
 ]

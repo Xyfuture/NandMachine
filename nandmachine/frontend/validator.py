@@ -16,6 +16,7 @@ from nandmachine.config.inference_config import (
     ParallelConfig,
 )
 from nandmachine.config.model_config import (
+    DeepseekV3ModelConfig,
     LlamaModelConfig,
     ModelConfigBase,
     Qwen3MoEModelConfig,
@@ -25,8 +26,7 @@ from nandmachine.config.model_config import (
 
 @dataclass(frozen=True)
 class _AttentionLayout:
-    num_kv_heads: int
-    head_dim: int
+    per_token_kv_values: int
 
 
 @dataclass(frozen=True)
@@ -78,20 +78,30 @@ def _require_divisible(value: int, divisor: int, name: str) -> int:
 
 def _resolve_attention_layout(model_config: ModelConfigBase) -> _AttentionLayout:
     attention_type = model_config.attention_type.lower()
-    head_dim = model_config.head_dim or (
-        model_config.hidden_size // model_config.num_attention_heads
-    )
 
     if attention_type == "mha":
-        num_kv_heads = model_config.num_attention_heads
+        head_dim = model_config.head_dim or (
+            model_config.hidden_size // model_config.num_attention_heads
+        )
+        per_token_kv_values = model_config.num_attention_heads * head_dim * 2
     elif attention_type == "gqa":
-        num_kv_heads = model_config.num_key_value_heads
+        head_dim = model_config.head_dim or (
+            model_config.hidden_size // model_config.num_attention_heads
+        )
+        per_token_kv_values = model_config.num_key_value_heads * head_dim * 2
     elif attention_type == "mla":
-        raise NotImplementedError("MLA KV cache sizing is not implemented yet")
+        if not hasattr(model_config, "kv_lora_rank") or not hasattr(
+            model_config,
+            "qk_rope_head_dim",
+        ):
+            raise NotImplementedError("MLA KV cache sizing is not implemented yet")
+        per_token_kv_values = (
+            model_config.kv_lora_rank + model_config.qk_rope_head_dim
+        )
     else:
         raise ValueError(f"Unsupported attention_type: {model_config.attention_type}")
 
-    return _AttentionLayout(num_kv_heads=num_kv_heads, head_dim=head_dim)
+    return _AttentionLayout(per_token_kv_values=per_token_kv_values)
 
 
 def _resolve_dense_parallelism(parallel_config: ParallelConfig | None) -> _DenseParallelism:
@@ -380,9 +390,7 @@ def _calculate_full_model_kv_cache_bytes(
     per_layer_value_count = (
         inference_config.batch_size
         * peak_sequence_length
-        * layout.num_kv_heads
-        * layout.head_dim
-        * 2
+        * layout.per_token_kv_values
     )
 
     return _bits_to_bytes(
@@ -414,11 +422,118 @@ def _calculate_qwen3_moe_full_model_kv_cache_bytes(
     per_layer_value_count = (
         inference_config.batch_size
         * peak_sequence_length
-        * layout.num_kv_heads
-        * layout.head_dim
-        * 2
+        * layout.per_token_kv_values
     )
 
+    return _bits_to_bytes(
+        per_layer_value_count * model_config.num_hidden_layers,
+        inference_config.kv_cache_bits,
+    )
+
+
+def _require_supported_deepseek_v3_capacity_model(
+    model_config: ModelConfigBase,
+) -> DeepseekV3ModelConfig:
+    if not isinstance(model_config, DeepseekV3ModelConfig):
+        raise NotImplementedError(
+            "MoE GPU capacity calculator only supports DeepseekV3ModelConfig for MLA"
+        )
+    if model_config.attention_type.lower() != "mla":
+        raise ValueError(
+            "DeepseekV3 GPU capacity calculator requires attention_type == 'mla'"
+        )
+    if model_config.hidden_act != "silu":
+        raise ValueError(f"Unsupported hidden_act: {model_config.hidden_act}")
+    if model_config.num_nextn_predict_layers != 1:
+        raise ValueError(
+            "DeepseekV3 GPU capacity calculator only supports num_nextn_predict_layers == 1"
+        )
+    return model_config
+
+
+def _calculate_per_rank_deepseek_v3_weight_bytes(
+    model_config: DeepseekV3ModelConfig,
+    inference_config: InferenceConfig,
+    parallelism: _MoEParallelism,
+) -> int:
+    local_num_heads = _require_divisible(
+        model_config.num_attention_heads,
+        parallelism.tp_size,
+        "num_attention_heads",
+    )
+    local_routed_expert_count = _require_divisible(
+        model_config.n_routed_experts,
+        parallelism.ffn_ep_size,
+        "n_routed_experts",
+    )
+    local_moe_intermediate_size = _require_divisible(
+        model_config.moe_intermediate_size,
+        parallelism.ffn_tp_size,
+        "moe_intermediate_size",
+    )
+    attention_param_count_per_layer = (
+        model_config.hidden_size * model_config.q_lora_rank
+        + model_config.q_lora_rank
+        + model_config.q_lora_rank
+        * (
+            local_num_heads
+            * (model_config.qk_nope_head_dim + model_config.qk_rope_head_dim)
+        )
+        + model_config.hidden_size
+        * (model_config.kv_lora_rank + model_config.qk_rope_head_dim)
+        + model_config.kv_lora_rank
+        + local_num_heads
+        * model_config.qk_nope_head_dim
+        * model_config.kv_lora_rank
+        + local_num_heads
+        * model_config.kv_lora_rank
+        * model_config.v_head_dim
+        + model_config.hidden_size
+        * (local_num_heads * model_config.v_head_dim)
+        + model_config.hidden_size * 2
+    )
+
+    moe_router_param_count_per_layer = (
+        model_config.hidden_size * model_config.n_routed_experts
+    )
+    moe_expert_param_count_per_layer = local_routed_expert_count * (
+        model_config.hidden_size * (local_moe_intermediate_size * 2)
+        + model_config.hidden_size * local_moe_intermediate_size
+    )
+
+    total_param_count = (
+        attention_param_count_per_layer * model_config.num_hidden_layers
+        + (moe_router_param_count_per_layer + moe_expert_param_count_per_layer)
+        * model_config.num_hidden_layers
+    )
+
+    return _bits_to_bytes(total_param_count, inference_config.weight_bits)
+
+
+def _calculate_deepseek_v3_full_model_kv_cache_bytes(
+    model_config: DeepseekV3ModelConfig,
+    inference_config: InferenceConfig,
+) -> int:
+    if inference_config.batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {inference_config.batch_size}")
+    if inference_config.input_sequence_length < 0:
+        raise ValueError(
+            f"input_sequence_length must be non-negative, got {inference_config.input_sequence_length}"
+        )
+    if inference_config.output_sequence_length < 0:
+        raise ValueError(
+            f"output_sequence_length must be non-negative, got {inference_config.output_sequence_length}"
+        )
+
+    layout = _resolve_attention_layout(model_config)
+    peak_sequence_length = (
+        inference_config.input_sequence_length + inference_config.output_sequence_length
+    )
+    per_layer_value_count = (
+        inference_config.batch_size
+        * peak_sequence_length
+        * layout.per_token_kv_values
+    )
     return _bits_to_bytes(
         per_layer_value_count * model_config.num_hidden_layers,
         inference_config.kv_cache_bits,
@@ -502,9 +617,21 @@ def validate_batch_size_or_raise(
             moe_model_config,
             inference_config,
         )
+    elif isinstance(model_config, DeepseekV3ModelConfig):
+        deepseek_model_config = _require_supported_deepseek_v3_capacity_model(model_config)
+        parallelism = _resolve_moe_parallelism(inference_config.parallel_config)
+        per_rank_weight_bytes = _calculate_per_rank_deepseek_v3_weight_bytes(
+            deepseek_model_config,
+            inference_config,
+            parallelism,
+        )
+        global_kv_cache_bytes = _calculate_deepseek_v3_full_model_kv_cache_bytes(
+            deepseek_model_config,
+            inference_config,
+        )
     else:
         raise NotImplementedError(
-            "GPU capacity calculator only supports dense Qwen3/Llama and Qwen3MoE"
+            "GPU capacity calculator only supports dense Qwen3/Llama, Qwen3MoE, and DeepseekV3"
         )
 
     result = _build_capacity_result(

@@ -11,8 +11,7 @@ from nandmachine.config.model_config import ModelConfigBase
 
 @dataclass(frozen=True)
 class _AttentionLayout:
-    num_kv_heads: int
-    head_dim: int
+    per_token_kv_values: int
 
 
 _IMBALANCED_KV_CACHE_MONTE_CARLO_TRIALS = 100
@@ -67,20 +66,30 @@ def _simulate_max_bin_load_mean(
 
 def _resolve_attention_layout(model_config: ModelConfigBase) -> _AttentionLayout:
     attention_type = model_config.attention_type.lower()
-    head_dim = model_config.head_dim or (
-        model_config.hidden_size // model_config.num_attention_heads
-    )
 
     if attention_type == "mha":
-        num_kv_heads = model_config.num_attention_heads
+        head_dim = model_config.head_dim or (
+            model_config.hidden_size // model_config.num_attention_heads
+        )
+        per_token_kv_values = model_config.num_attention_heads * head_dim * 2
     elif attention_type == "gqa":
-        num_kv_heads = model_config.num_key_value_heads
+        head_dim = model_config.head_dim or (
+            model_config.hidden_size // model_config.num_attention_heads
+        )
+        per_token_kv_values = model_config.num_key_value_heads * head_dim * 2
     elif attention_type == "mla":
-        raise NotImplementedError("MLA KV cache sizing is not implemented yet")
+        if not hasattr(model_config, "kv_lora_rank") or not hasattr(
+            model_config,
+            "qk_rope_head_dim",
+        ):
+            raise NotImplementedError("MLA KV cache sizing is not implemented yet")
+        per_token_kv_values = (
+            model_config.kv_lora_rank + model_config.qk_rope_head_dim
+        )
     else:
         raise ValueError(f"Unsupported attention_type: {model_config.attention_type}")
 
-    return _AttentionLayout(num_kv_heads=num_kv_heads, head_dim=head_dim)
+    return _AttentionLayout(per_token_kv_values=per_token_kv_values)
 
 
 def _resolve_attention_layout_legacy(model_config: ModelConfigBase) -> _AttentionLayout:
@@ -122,13 +131,11 @@ def calculate_kv_cache_state(
     total_kv_values = (
         inference_config.batch_size
         * peak_sequence_length
-        * layout.num_kv_heads
-        * layout.head_dim
-        * 2
+        * layout.per_token_kv_values
     )
     total_bytes = _bits_to_bytes(total_kv_values, inference_config.kv_cache_bits)
 
-    per_token_kv_values = layout.num_kv_heads * layout.head_dim * 2
+    per_token_kv_values = layout.per_token_kv_values
     per_token_kv_bytes = _bits_to_bytes(per_token_kv_values, inference_config.kv_cache_bits)
     if per_token_kv_bytes <= 0:
         raise ValueError("per-token KV cache size must be positive")
