@@ -66,7 +66,7 @@ def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_global_batch():
         input_sequence_length=128,
         output_sequence_length=32,
         kv_cache_bits=16,
-        parallel_config=DenseParallelConfig(num_ranks=4, tp_size=1, dp_size=4),
+        parallel_config=ParallelConfig(num_ranks=4),
     )
 
     state = calculate_kv_cache_state(
@@ -157,7 +157,7 @@ def test_calculate_kv_cache_state_scales_with_kv_precision():
         head_dim=128,
         attention_type="gqa",
     )
-    parallel_config = DenseParallelConfig(num_ranks=4, tp_size=1, dp_size=4)
+    parallel_config = ParallelConfig(num_ranks=4)
 
     state_8bit = calculate_kv_cache_state(
         make_nand_config(page_size=1, num_plane=4),
@@ -243,8 +243,8 @@ def test_calculate_kv_cache_state_ignores_moe_parallelism_when_sizing_global_kv_
             kv_cache_bits=16,
             parallel_config=MoEParallelConfig(
                 num_ranks=4,
-                attn_dp_size=1,
-                attn_tp_size=4,
+                attn_dp_size=4,
+                attn_tp_size=1,
                 ffn_tp_size=2,
                 ffn_ep_size=2,
             ),
@@ -412,7 +412,7 @@ def test_build_imbalanced_kv_cache_state_uses_balanced_hyper_page_size_with_chan
         input_sequence_length=128,
         output_sequence_length=32,
         kv_cache_bits=16,
-        parallel_config=DenseParallelConfig(num_ranks=4, tp_size=1, dp_size=4),
+        parallel_config=ParallelConfig(num_ranks=4),
     )
 
     balanced_state = build_kv_cache_state(

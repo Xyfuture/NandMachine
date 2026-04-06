@@ -43,11 +43,10 @@ def _build_graph_meta(batch_size: int, parallel_config: MoEParallelConfig) -> Nx
         ),
         kv_cache_state=KVCacheState(
             total_kv_cache_size_per_layer=1024,
-            num_nand_pages_per_layer=8,
-            num_hyper_pages_per_layer=1,
             kv_block_size_tokens=16,
             num_kv_blocks=4,
-            kv_cache_num_pages_per_layer=8,
+            num_nand_pages_per_layer=8,
+            num_hyper_pages_per_layer=1,
         ),
     )
 
@@ -238,8 +237,8 @@ def test_qwen3_moe_decoder_layer_uses_parallel_config():
     )()
     parallel_config = MoEParallelConfig(
         num_ranks=4,
-        attn_dp_size=2,
-        attn_tp_size=2,
+        attn_dp_size=4,
+        attn_tp_size=1,
         ffn_tp_size=2,
         ffn_ep_size=2,
     )
@@ -247,10 +246,10 @@ def test_qwen3_moe_decoder_layer_uses_parallel_config():
     layer = Qwen3MoEDecoderLayer(config, parallel_config)
 
     assert isinstance(layer.self_attn, Qwen3MoEAttention)
-    assert layer.self_attn.tp_size == 2
-    assert layer.self_attn.dp_size == 2
-    assert layer.self_attn.attn.tp_size == 2
-    assert layer.self_attn.attn.dp_size == 2
+    assert layer.self_attn.tp_size == 1
+    assert layer.self_attn.dp_size == 4
+    assert layer.self_attn.attn.tp_size == 1
+    assert layer.self_attn.attn.dp_size == 4
     assert layer.mlp.ffn_tp_size == 2
 
 

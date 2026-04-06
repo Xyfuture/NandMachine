@@ -13,6 +13,24 @@ class DenseParallelConfig(ParallelConfig):
     tp_size:int 
     dp_size:int 
 
+    def __post_init__(self) -> None:
+        if self.num_ranks <= 0:
+            raise ValueError(f"num_ranks must be > 0, got {self.num_ranks}")
+        if self.tp_size <= 0:
+            raise ValueError(f"tp_size must be > 0, got {self.tp_size}")
+        if self.dp_size <= 0:
+            raise ValueError(f"dp_size must be > 0, got {self.dp_size}")
+        if self.dp_size != 1:
+            raise ValueError(
+                f"DenseParallelConfig requires dp_size == 1, got {self.dp_size}"
+            )
+        if self.num_ranks != self.dp_size * self.tp_size:
+            raise ValueError(
+                "DenseParallelConfig must satisfy num_ranks == dp_size * tp_size, "
+                f"got num_ranks={self.num_ranks}, dp_size={self.dp_size}, "
+                f"tp_size={self.tp_size}"
+            )
+
 
 @dataclass
 class MoEParallelConfig(ParallelConfig):
@@ -29,6 +47,11 @@ class MoEParallelConfig(ParallelConfig):
             raise ValueError(f"attn_dp_size must be > 0, got {self.attn_dp_size}")
         if self.attn_tp_size <= 0:
             raise ValueError(f"attn_tp_size must be > 0, got {self.attn_tp_size}")
+        if self.attn_tp_size != 1:
+            raise ValueError(
+                "MoEParallelConfig requires attn_tp_size == 1, "
+                f"got {self.attn_tp_size}"
+            )
         if self.ffn_tp_size <= 0:
             raise ValueError(f"ffn_tp_size must be > 0, got {self.ffn_tp_size}")
         if self.ffn_ep_size <= 0:

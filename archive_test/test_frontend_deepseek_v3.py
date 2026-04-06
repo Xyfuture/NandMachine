@@ -68,8 +68,8 @@ def _build_supported_config() -> DeepseekV3ModelConfig:
 def _build_parallel_config() -> MoEParallelConfig:
     return MoEParallelConfig(
         num_ranks=4,
-        attn_dp_size=2,
-        attn_tp_size=2,
+        attn_dp_size=4,
+        attn_tp_size=1,
         ffn_tp_size=2,
         ffn_ep_size=2,
     )
@@ -190,7 +190,7 @@ EXPECTED_NAND_MACRO_SIGNATURE = [
     ("SramPrefetchRelease", (2,)),
     ("VectorOp", (2,), "rms_norm", (8, 8), 16),
     ("SramPrefetch", (), 1),
-    ("MatMulOp", (5, 4), (8, 8, 16), 16),
+    ("MatMulOp", (5, 4), (8, 8, 32), 16),
     ("SramPrefetchRelease", (6,)),
     ("SramPrefetch", (), 1),
     ("MatMulOp", (8, 6), (8, 32, 6), 16),
@@ -198,37 +198,36 @@ EXPECTED_NAND_MACRO_SIGNATURE = [
     ("VectorOp", (9,), "rms_norm", (8, 4), 16),
     ("MatMulOp", (11,), (8, 6, 4), 16),
     ("SramPrefetch", (12,), 1),
-    ("FlashMLAOp", (13,), (10, 2, 4, 2), (10, 2, 2, 2), (10, 2, 2, 4), (10, 4), 16),
+    ("FlashMLAOp", (13,), (5, 4, 4, 2), (5, 4, 2, 2), (5, 4, 2, 4), (5, 8), 16),
     ("SramPrefetchRelease", (14,)),
     ("MatMulOp", (14,), (8, 4, 4), 16),
     ("SramPrefetch", (), 1),
-    ("MatMulOp", (17, 16), (8, 8, 32), 16),
+    ("MatMulOp", (17, 16), (8, 16, 32), 16),
     ("SramPrefetchRelease", (18,)),
-    ("AllReduceOp", (18,), 2, 512, 16),
-    ("VectorOp", (20,), "rms_norm", (8, 32), 16),
+    ("VectorOp", (18,), "rms_norm", (8, 32), 16),
     ("SramPrefetch", (), 1),
-    ("MatMulOp", (22, 21), (8, 32, 4), 16),
-    ("SramPrefetchRelease", (23,)),
+    ("MatMulOp", (21, 20), (8, 32, 4), 16),
+    ("SramPrefetchRelease", (22,)),
     ("VectorOp", (), "moe_topk_router", (8, 4, 2), 16),
-    ("All2AllOp", (25,), 4, 256, 16),
+    ("All2AllOp", (24,), 4, 256, 16),
     ("SramPrefetch", (), 2),
-    ("MatMulOp", (27, 26), (4, 32, 24), 16),
-    ("SramPrefetchRelease", (28,)),
+    ("MatMulOp", (26, 25), (4, 32, 24), 16),
+    ("SramPrefetchRelease", (27,)),
     ("VectorOp", (), "silu_mul", (4, 12), 16),
     ("SramPrefetch", (), 1),
-    ("MatMulOp", (31,), (4, 12, 32), 16),
-    ("SramPrefetchRelease", (32,)),
-    ("AllReduceOp", (32,), 2, 256, 16),
+    ("MatMulOp", (30,), (4, 12, 32), 16),
+    ("SramPrefetchRelease", (31,)),
+    ("AllReduceOp", (31,), 2, 256, 16),
     ("SramPrefetch", (), 2),
-    ("MatMulOp", (35,), (4, 32, 24), 16),
-    ("SramPrefetchRelease", (36,)),
+    ("MatMulOp", (34,), (4, 32, 24), 16),
+    ("SramPrefetchRelease", (35,)),
     ("VectorOp", (), "silu_mul", (4, 12), 16),
     ("SramPrefetch", (), 1),
-    ("MatMulOp", (39,), (4, 12, 32), 16),
-    ("SramPrefetchRelease", (40,)),
-    ("AllReduceOp", (40,), 2, 256, 16),
-    ("All2AllOp", (42,), 4, 256, 16),
-    ("VectorOp", (43,), "moe_weighted_sum", (8, 32), 16),
+    ("MatMulOp", (38,), (4, 12, 32), 16),
+    ("SramPrefetchRelease", (39,)),
+    ("AllReduceOp", (39,), 2, 256, 16),
+    ("All2AllOp", (41,), 4, 256, 16),
+    ("VectorOp", (42,), "moe_weighted_sum", (8, 32), 16),
 ]
 
 
@@ -270,8 +269,8 @@ def test_mla_attention_codegen_uses_local_batch_and_local_blocks():
         qk_nope_head_dim=6,
         qk_rope_head_dim=2,
         v_head_dim=4,
-        tp_size=2,
-        dp_size=2,
+        tp_size=1,
+        dp_size=4,
     )
 
     macro_op_list = module.macro_code_gen(graph_meta)
@@ -280,10 +279,10 @@ def test_mla_attention_codegen_uses_local_batch_and_local_blocks():
     assert isinstance(macro_op_list[0], MatMulOp)
     assert macro_op_list[0].dim == (8, 6, 4)
     assert isinstance(macro_op_list[1], FlashMLAOp)
-    assert macro_op_list[1].qk_latent_bmm_shape == (10, 2, 4, 2)
-    assert macro_op_list[1].qk_rope_bmm_shape == (10, 2, 2, 2)
-    assert macro_op_list[1].sv_latent_bmm_shape == (10, 2, 2, 4)
-    assert macro_op_list[1].softmax_shape == (10, 4)
+    assert macro_op_list[1].qk_latent_bmm_shape == (5, 4, 4, 2)
+    assert macro_op_list[1].qk_rope_bmm_shape == (5, 4, 2, 2)
+    assert macro_op_list[1].sv_latent_bmm_shape == (5, 4, 2, 4)
+    assert macro_op_list[1].softmax_shape == (5, 8)
     assert isinstance(macro_op_list[2], MatMulOp)
     assert macro_op_list[2].dim == (8, 4, 4)
 
@@ -297,8 +296,8 @@ def test_validate_batch_size_supports_deepseek_v3_mla_capacity_path():
     )
 
     assert result.batch_size == 8
-    assert result.dp_size == 2
-    assert result.tp_size == 2
+    assert result.dp_size == 4
+    assert result.tp_size == 1
     assert result.ffn_ep_size == 2
     assert result.ffn_tp_size == 2
     assert result.per_rank_weight_bytes > 0
@@ -378,8 +377,8 @@ def test_deepseek_v3_hbm_codegen_keeps_single_flashmla_op():
     flash_mla_ops = [op for op in macro_op_list if isinstance(op, FlashMLAOp)]
 
     assert len(flash_mla_ops) == 1
-    assert flash_mla_ops[0].qk_latent_bmm_shape == (10, 2, 4, 2)
-    assert flash_mla_ops[0].softmax_shape == (10, 4)
+    assert flash_mla_ops[0].qk_latent_bmm_shape == (5, 4, 4, 2)
+    assert flash_mla_ops[0].softmax_shape == (5, 8)
 
 
 def test_run_macro_ops_executes_flashmla_sequence():

@@ -6,7 +6,11 @@ torch = pytest.importorskip("torch")
 from nandmachine.commands.macro import FlashAttnOp, MatMulOp, SramPrefetch, SramPrefetchRelease
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import DenseParallelConfig, InferenceConfig, MoEParallelConfig
+from nandmachine.config.inference_config import (
+    DenseParallelConfig,
+    InferenceConfig,
+    MoEParallelConfig,
+)
 from nandmachine.frontend.core.graph.base import NxGraphMeta
 from nandmachine.frontend.core.graph.base import NxTracer
 from nandmachine.frontend.modules.modules import (
@@ -180,14 +184,14 @@ def test_attention_codegen_rejects_moe_dp_size_mismatch():
     graph_meta = _build_attention_graph_meta(
         MoEParallelConfig(
             num_ranks=4,
-            attn_dp_size=2,
-            attn_tp_size=2,
+            attn_dp_size=4,
+            attn_tp_size=1,
             ffn_tp_size=2,
             ffn_ep_size=2,
         )
     )
 
-    with pytest.raises(ValueError, match="Attention dp_size must be 2, got 1"):
+    with pytest.raises(ValueError, match="Attention dp_size must be 4, got 1"):
         module.macro_code_gen(graph_meta)
 
 
@@ -220,6 +224,22 @@ def test_inference_config_rejects_invalid_memory_backend():
             kv_block_size_bytes=1024,
             memory_backend="dram",
             parallel_config=DenseParallelConfig(num_ranks=1, tp_size=1, dp_size=1),
+        )
+
+
+def test_dense_parallel_config_rejects_attention_dp_not_one():
+    with pytest.raises(ValueError, match="DenseParallelConfig requires dp_size == 1, got 2"):
+        DenseParallelConfig(num_ranks=2, tp_size=1, dp_size=2)
+
+
+def test_moe_parallel_config_rejects_attention_tp_not_one():
+    with pytest.raises(ValueError, match="MoEParallelConfig requires attn_tp_size == 1, got 2"):
+        MoEParallelConfig(
+            num_ranks=4,
+            attn_dp_size=2,
+            attn_tp_size=2,
+            ffn_tp_size=2,
+            ffn_ep_size=2,
         )
 
 
@@ -313,7 +333,13 @@ def test_build_gqa_kernel_param_splits_kv_blocks_for_dp():
         dp_size=2,
     )
     graph_meta = _build_attention_graph_meta(
-        DenseParallelConfig(num_ranks=2, tp_size=1, dp_size=2),
+        MoEParallelConfig(
+            num_ranks=2,
+            attn_dp_size=2,
+            attn_tp_size=1,
+            ffn_tp_size=1,
+            ffn_ep_size=2,
+        ),
         memory_backend="hbm",
     )
 

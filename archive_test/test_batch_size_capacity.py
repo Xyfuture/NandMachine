@@ -256,7 +256,12 @@ def test_validate_batch_size_mha_uses_attention_heads_for_qkv_weights():
     assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
 
 
-def test_validate_batch_size_dense_parallel_splits_weight_but_keeps_global_kv_cache():
+def test_dense_parallel_config_rejects_attention_dp_not_one():
+    with pytest.raises(ValueError, match="DenseParallelConfig requires dp_size == 1, got 2"):
+        DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2)
+
+
+def test_validate_batch_size_parallel_config_is_pure_dp():
     model_config = LlamaModelConfig(
         hidden_size=1024,
         num_attention_heads=8,
@@ -269,7 +274,7 @@ def test_validate_batch_size_dense_parallel_splits_weight_but_keeps_global_kv_ca
     )
     inference_config = _make_inference_config(
         10,
-        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
+        parallel_config=ParallelConfig(num_ranks=4),
     )
 
     result = validate_batch_size_or_raise(
@@ -280,10 +285,10 @@ def test_validate_batch_size_dense_parallel_splits_weight_but_keeps_global_kv_ca
     )
 
     per_layer_weight_params = (
-        1024 * (((8 + 2 * 2) * 128) // 2)
-        + 1024 * ((8 * 128) // 2)
-        + 1024 * ((2048 * 2) // 2)
-        + 1024 * (2048 // 2)
+        1024 * ((8 + 2 * 2) * 128)
+        + 1024 * (8 * 128)
+        + 1024 * (2048 * 2)
+        + 1024 * 2048
         + (2 * 1024)
     )
     expected_per_rank_weight_bytes = per_layer_weight_params * 2 * 2
@@ -291,15 +296,15 @@ def test_validate_batch_size_dense_parallel_splits_weight_but_keeps_global_kv_ca
     expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
 
     assert result.num_ranks == 4
-    assert result.dp_size == 2
-    assert result.tp_size == 2
+    assert result.dp_size == 4
+    assert result.tp_size == 1
     assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
     assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
     assert result.total_weight_bytes == expected_per_rank_weight_bytes * 4
     assert result.total_kv_cache_bytes == expected_per_rank_kv_bytes
 
 
-def test_validate_batch_size_parallel_config_is_pure_dp():
+def test_validate_batch_size_parallel_config_pure_dp_keeps_global_kv_cache():
     model_config = Qwen3ModelConfig(
         hidden_size=1024,
         num_attention_heads=8,
@@ -444,28 +449,11 @@ def test_calculate_max_batch_size_raises_when_batch_size_one_does_not_fit():
 
 
 def test_validate_batch_size_rejects_invalid_dense_parallel_product():
-    model_config = Qwen3ModelConfig(
-        hidden_size=1024,
-        num_attention_heads=8,
-        num_key_value_heads=2,
-        max_position_embeddings=4096,
-        intermediate_size=2048,
-        hidden_act="silu",
-        head_dim=128,
-        num_hidden_layers=2,
-    )
-    inference_config = _make_inference_config(
-        2,
-        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=1, tp_size=2),
-    )
-
-    with pytest.raises(ValueError, match="num_ranks == dp_size \\* tp_size"):
-        validate_batch_size_or_raise(
-            "A100_80GB",
-            HBM_ONLY_MEMORY_ARCHITECTURE,
-            model_config,
-            inference_config,
-        )
+    with pytest.raises(
+        ValueError,
+        match="DenseParallelConfig must satisfy num_ranks == dp_size \\* tp_size",
+    ):
+        DenseParallelConfig(num_ranks=4, dp_size=1, tp_size=2)
 
 
 def test_validate_batch_size_kv_cache_does_not_require_gqa_heads_divisible_by_tp():
@@ -598,8 +586,8 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
         9,
         parallel_config=MoEParallelConfig(
             num_ranks=4,
-            attn_dp_size=2,
-            attn_tp_size=2,
+            attn_dp_size=4,
+            attn_tp_size=1,
             ffn_tp_size=2,
             ffn_ep_size=2,
         ),
@@ -613,8 +601,8 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
     )
 
     per_layer_weight_params = (
-        1024 * (((8 + 2 * 2) * 128) // 2)
-        + 1024 * ((8 * 128) // 2)
+        1024 * ((8 + 2 * 2) * 128)
+        + 1024 * (8 * 128)
         + (2 * 1024 + 2 * 128)
         + 1024 * 4
         + (4 // 2) * (1024 * ((256 * 2) // 2) + 1024 * (256 // 2))
@@ -624,8 +612,8 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
     expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
 
     assert result.num_ranks == 4
-    assert result.dp_size == 2
-    assert result.tp_size == 2
+    assert result.dp_size == 4
+    assert result.tp_size == 1
     assert result.ffn_ep_size == 2
     assert result.ffn_tp_size == 2
     assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
@@ -786,8 +774,8 @@ def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
         output_sequence_length=512,
         parallel_config=MoEParallelConfig(
             num_ranks=128,
-            attn_dp_size=32,
-            attn_tp_size=4,
+            attn_dp_size=128,
+            attn_tp_size=1,
             ffn_tp_size=4,
             ffn_ep_size=32,
         ),
@@ -806,9 +794,9 @@ def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
         inference_config,
     )
 
-    assert result.per_rank_weight_bytes == 6_999_784_448
+    assert result.per_rank_weight_bytes == 17_053_531_136
     assert result.per_rank_kv_cache_bytes == 492_830_720
-    assert max_result.batch_size == 160
+    assert max_result.batch_size == 139
 
 
 def test_validate_batch_size_uses_h100_total_capacity_for_hbm_hbf_architectures():
@@ -879,7 +867,7 @@ def test_validate_batch_size_architecture_only_changes_capacity_budget():
         7,
         input_sequence_length=128,
         output_sequence_length=32,
-        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
+        parallel_config=ParallelConfig(num_ranks=4),
     )
 
     hbm_only_result = validate_batch_size_or_raise(
@@ -915,7 +903,7 @@ def test_validate_batch_size_reports_total_capacity_for_multi_rank_h100_csi():
         8,
         input_sequence_length=128,
         output_sequence_length=32,
-        parallel_config=DenseParallelConfig(num_ranks=4, dp_size=2, tp_size=2),
+        parallel_config=ParallelConfig(num_ranks=4),
     )
 
     result = validate_batch_size_or_raise(

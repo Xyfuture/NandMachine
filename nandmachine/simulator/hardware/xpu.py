@@ -184,6 +184,10 @@ class PerfetchEngine(SimModule):
 
         self.release_command_queue:list[DepSlot] = []
 
+        # special function to skip first prefetch in long pipeline
+        self.is_first_prefetch = True
+
+
         self.register_coroutine(self.process)
 
     def process(self):
@@ -205,11 +209,21 @@ class PerfetchEngine(SimModule):
             for input_slot in macro_op_slot.input_slots: # type: ignore
                 if not input_slot.is_finished:
                     SimModule.wait(input_slot.finish_event)
+
+            # special function to skip first prefetch in long pipeline
+            if self.is_first_prefetch:
+                macro_op_slot.is_finished=True
+                macro_op_slot.finish_event.notify(SimTime(1))
+                self.is_first_prefetch = False
+                continue
+
+
             # 开始执行
             start_cycle = _get_current_sim_cycle()
             nand_request_slot = DepSlot(macro_op_slot.payload.num_prefetch_pages)
 
             self.nand_controller.handle_request(nand_request_slot)
+
             SimModule.wait(nand_request_slot.finish_event)
             end_cycle = _get_current_sim_cycle()
             _record_macro_op_trace(
