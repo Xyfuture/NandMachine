@@ -488,8 +488,12 @@ class FlashMLA_BatchedMatMul_Simulation:
             compile_mode=compile_mode,
             return_unit=return_unit,
         )
-        return qk_latent_time + qk_rope_time + softmax_time + sv_latent_time
-
+        # print(f"qk : {qk_latent_time}\
+        #       qk_rope: {qk_rope_time}\
+        #         softmax: {softmax_time}\
+        #         sv:{sv_latent_time}")
+        # return qk_latent_time + qk_rope_time + softmax_time + sv_latent_time
+        return qk_latent_time + qk_rope_time + sv_latent_time//2 
 
 class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N的矩阵
     @dataclass(frozen=True)
