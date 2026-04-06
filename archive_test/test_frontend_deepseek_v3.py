@@ -8,7 +8,15 @@ torch = pytest.importorskip("torch")
 
 from torch.fx import GraphModule
 
-from nandmachine.commands.macro import FlashMLAOp, MatMulOp, SramPrefetch, SramPrefetchRelease
+from nandmachine.commands.macro import (
+    All2AllOp,
+    AllReduceOp,
+    FlashMLAOp,
+    MatMulOp,
+    SramPrefetch,
+    SramPrefetchRelease,
+    VectorOp,
+)
 from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.config.inference_config import InferenceConfig, MoEParallelConfig
@@ -128,6 +136,102 @@ def _generate_macro_ops(memory_backend: str = "hbm"):
     return graph_module.graph.meta[CodeGenPass.MACRO_OP_LIST_META_KEY]
 
 
+def _normalize_macro_op_list(macro_op_list):
+    normalized = []
+    for op in macro_op_list:
+        deps = tuple(macro_op_list.index(dep) for dep in op.input_ops)
+        if isinstance(op, MatMulOp):
+            normalized.append(
+                ("MatMulOp", deps, op.dim, op.weight_bits)
+            )
+        elif isinstance(op, FlashMLAOp):
+            normalized.append(
+                (
+                    "FlashMLAOp",
+                    deps,
+                    op.qk_latent_bmm_shape,
+                    op.qk_rope_bmm_shape,
+                    op.sv_latent_bmm_shape,
+                    op.softmax_shape,
+                    op.weight_bits,
+                )
+            )
+        elif isinstance(op, VectorOp):
+            normalized.append(
+                (
+                    "VectorOp",
+                    deps,
+                    op.vector_op_type,
+                    tuple(op.vector_shape),
+                    op.weight_bits,
+                )
+            )
+        elif isinstance(op, AllReduceOp):
+            normalized.append(
+                ("AllReduceOp", deps, op.num_ranks, op.data_size, op.weight_bits)
+            )
+        elif isinstance(op, All2AllOp):
+            normalized.append(
+                ("All2AllOp", deps, op.num_gpus, op.data_size, op.weight_bits)
+            )
+        elif isinstance(op, SramPrefetch):
+            normalized.append(("SramPrefetch", deps, op.num_prefetch_pages))
+        elif isinstance(op, SramPrefetchRelease):
+            normalized.append(("SramPrefetchRelease", deps))
+        else:
+            raise TypeError(f"Unsupported macro op type: {type(op).__name__}")
+    return normalized
+
+
+EXPECTED_NAND_MACRO_SIGNATURE = [
+    ("VectorOp", (), "rms_norm", (8, 32), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (1, 0), (8, 32, 8), 16),
+    ("SramPrefetchRelease", (2,)),
+    ("VectorOp", (2,), "rms_norm", (8, 8), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (5, 4), (8, 8, 16), 16),
+    ("SramPrefetchRelease", (6,)),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (8, 6), (8, 32, 6), 16),
+    ("SramPrefetchRelease", (9,)),
+    ("VectorOp", (9,), "rms_norm", (8, 4), 16),
+    ("MatMulOp", (11,), (8, 6, 4), 16),
+    ("SramPrefetch", (12,), 1),
+    ("FlashMLAOp", (13,), (10, 2, 4, 2), (10, 2, 2, 2), (10, 2, 2, 4), (10, 4), 16),
+    ("SramPrefetchRelease", (14,)),
+    ("MatMulOp", (14,), (8, 4, 4), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (17, 16), (8, 8, 32), 16),
+    ("SramPrefetchRelease", (18,)),
+    ("AllReduceOp", (18,), 2, 512, 16),
+    ("VectorOp", (20,), "rms_norm", (8, 32), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (22, 21), (8, 32, 4), 16),
+    ("SramPrefetchRelease", (23,)),
+    ("VectorOp", (), "moe_topk_router", (8, 4, 2), 16),
+    ("All2AllOp", (25,), 4, 256, 16),
+    ("SramPrefetch", (), 2),
+    ("MatMulOp", (27, 26), (4, 32, 24), 16),
+    ("SramPrefetchRelease", (28,)),
+    ("VectorOp", (), "silu_mul", (4, 12), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (31,), (4, 12, 32), 16),
+    ("SramPrefetchRelease", (32,)),
+    ("AllReduceOp", (32,), 2, 256, 16),
+    ("SramPrefetch", (), 2),
+    ("MatMulOp", (35,), (4, 32, 24), 16),
+    ("SramPrefetchRelease", (36,)),
+    ("VectorOp", (), "silu_mul", (4, 12), 16),
+    ("SramPrefetch", (), 1),
+    ("MatMulOp", (39,), (4, 12, 32), 16),
+    ("SramPrefetchRelease", (40,)),
+    ("AllReduceOp", (40,), 2, 256, 16),
+    ("All2AllOp", (42,), 4, 256, 16),
+    ("VectorOp", (43,), "moe_weighted_sum", (8, 32), 16),
+]
+
+
 def test_deepseek_v3_model_config_from_dict_reads_supported_fields():
     raw_config = json.loads(MODEL_CARD_PATH.read_text())
 
@@ -176,10 +280,10 @@ def test_mla_attention_codegen_uses_local_batch_and_local_blocks():
     assert isinstance(macro_op_list[0], MatMulOp)
     assert macro_op_list[0].dim == (8, 6, 4)
     assert isinstance(macro_op_list[1], FlashMLAOp)
-    assert macro_op_list[1].qk_latent_bmm_shape == (10, 8, 4, 2)
-    assert macro_op_list[1].qk_rope_bmm_shape == (10, 8, 2, 2)
-    assert macro_op_list[1].sv_latent_bmm_shape == (10, 8, 2, 4)
-    assert macro_op_list[1].softmax_shape == (80, 2)
+    assert macro_op_list[1].qk_latent_bmm_shape == (10, 2, 4, 2)
+    assert macro_op_list[1].qk_rope_bmm_shape == (10, 2, 2, 2)
+    assert macro_op_list[1].sv_latent_bmm_shape == (10, 2, 2, 4)
+    assert macro_op_list[1].softmax_shape == (10, 4)
     assert isinstance(macro_op_list[2], MatMulOp)
     assert macro_op_list[2].dim == (8, 4, 4)
 
@@ -229,6 +333,10 @@ def test_mla_kernels_lower_to_expected_macro_op_sequences():
 
     assert len(hbm_macro_ops) == 1
     assert isinstance(hbm_macro_ops[0], FlashMLAOp)
+    assert hbm_macro_ops[0].qk_latent_bmm_shape == (10, 2, 4, 2)
+    assert hbm_macro_ops[0].qk_rope_bmm_shape == (10, 2, 2, 2)
+    assert hbm_macro_ops[0].sv_latent_bmm_shape == (10, 2, 2, 4)
+    assert hbm_macro_ops[0].softmax_shape == (10, 4)
     assert isinstance(nand_macro_ops[0], SramPrefetch)
     assert isinstance(nand_macro_ops[1], FlashMLAOp)
     assert isinstance(nand_macro_ops[2], SramPrefetchRelease)
@@ -256,6 +364,22 @@ def test_deepseek_v3_pipeline_generates_and_runs_flashmla_macro_ops():
     )
     assert isinstance(macro_op_list[flash_mla_index - 1], MatMulOp)
     assert isinstance(macro_op_list[flash_mla_index + 1], MatMulOp)
+
+
+def test_deepseek_v3_nand_macro_op_list_matches_snapshot():
+    macro_op_list = _generate_macro_ops("nand")
+
+    assert _normalize_macro_op_list(macro_op_list) == EXPECTED_NAND_MACRO_SIGNATURE
+
+
+def test_deepseek_v3_hbm_codegen_keeps_single_flashmla_op():
+    macro_op_list = _generate_macro_ops("hbm")
+
+    flash_mla_ops = [op for op in macro_op_list if isinstance(op, FlashMLAOp)]
+
+    assert len(flash_mla_ops) == 1
+    assert flash_mla_ops[0].qk_latent_bmm_shape == (10, 2, 4, 2)
+    assert flash_mla_ops[0].softmax_shape == (10, 4)
 
 
 def test_run_macro_ops_executes_flashmla_sequence():

@@ -720,6 +720,10 @@ def test_flashmla_compile_and_simulate_forwards_mla_matmul_types(monkeypatch):
             self.dim = dim
             self.weight_bits = weight_bits
 
+        @staticmethod
+        def get_instance(dim, weight_bits=16):
+            return FakeSoftmaxSimulation(dim=dim, weight_bits=weight_bits)
+
         def compile_and_simulate(self, *, pcb_module, compile_mode, return_unit="cycle"):
             assert pcb_module is A100_80GB_FP16
             assert compile_mode == "heuristic-GPU"
@@ -755,8 +759,127 @@ def test_flashmla_compile_and_simulate_forwards_mla_matmul_types(monkeypatch):
         compile_mode="heuristic-GPU",
     )
 
-    assert cycles == 26
+    assert cycles == 17
     assert seen_matmul_types == ["MLA_QK", "MLA_QK", "MLA_SV"]
+
+
+def test_flashmla_small_shape_does_not_trigger_chunk_plan():
+    instance = FlashMLA_BatchedMatMul_Simulation(
+        qk_latent_dim=(2, 8, 4, 2),
+        qk_rope_dim=(2, 8, 2, 2),
+        sv_latent_dim=(2, 8, 2, 4),
+        softmax_dim=(16, 2),
+        weight_bits=16,
+    )
+
+    assert instance._build_chunk_plan_or_none() is None
+
+
+def test_flashmla_large_shape_chunk_plan_matches_notebook_case():
+    instance = FlashMLA_BatchedMatMul_Simulation(
+        qk_latent_dim=(5130, 128, 512, 228),
+        qk_rope_dim=(5130, 128, 64, 228),
+        sv_latent_dim=(5130, 128, 228, 512),
+        softmax_dim=(5130, 29184),
+        weight_bits=16,
+    )
+
+    chunk_plan = instance._build_chunk_plan_or_none()
+
+    assert chunk_plan is not None
+    assert chunk_plan.blocks_per_chunk == 32
+    assert chunk_plan.num_chunks == 161
+
+
+def test_flashmla_chunked_simulation_reuses_batched_matmul_and_softmax_caches(
+    monkeypatch,
+):
+    FlashAttn_BatchedMatMul_Simulation.clear_caches()
+    Softmax_Simulation.clear_caches()
+
+    def fake_matmul_build_compile_result(
+        self,
+        *,
+        pcb_module,
+        bandwidth_config_key,
+        compile_mode,
+    ):
+        del self, pcb_module, bandwidth_config_key, compile_mode
+        return matmul_module.MatMul_Simulation.CompileResult(
+            best_mapping="fake",
+            best_cycle_count=7,
+            best_time_ns=7,
+        )
+
+    def fake_softmax_build_compile_result(self, *, pcb_module, compile_mode):
+        del self, pcb_module, compile_mode
+        return flash_attention_module.Softmax_Simulation.CompileResult(
+            best_mapping="fake",
+            best_cycle_count=5,
+            best_time_ns=5,
+        )
+
+    monkeypatch.setattr(
+        flash_attention_module.MatMul_Simulation,
+        "_build_compile_result",
+        fake_matmul_build_compile_result,
+    )
+    monkeypatch.setattr(
+        flash_attention_module.Softmax_Simulation,
+        "_build_compile_result",
+        fake_softmax_build_compile_result,
+    )
+
+    instance = FlashMLA_BatchedMatMul_Simulation(
+        qk_latent_dim=(5130, 128, 512, 228),
+        qk_rope_dim=(5130, 128, 64, 228),
+        sv_latent_dim=(5130, 128, 228, 512),
+        softmax_dim=(5130, 29184),
+        weight_bits=16,
+    )
+    nand_config = make_nand_config()
+    hbm_bw = hbm_bandwidth_bytes_per_sec()
+
+    first_cycles = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        nand_config=nand_config,
+        hbm_bandwidth_bytes_per_sec=hbm_bw,
+        compile_mode="heuristic-GPU",
+    )
+    flash_cache_after_first = (
+        FlashAttn_BatchedMatMul_Simulation.compile_and_simulate.cache_info()
+    )
+    softmax_cache_after_first = Softmax_Simulation.compile_and_simulate.cache_info()
+
+    second_cycles = instance.compile_and_simulate(
+        pcb_module=A100_80GB_FP16,
+        nand_config=nand_config,
+        hbm_bandwidth_bytes_per_sec=hbm_bw,
+        compile_mode="heuristic-GPU",
+    )
+    flash_cache_after_second = (
+        FlashAttn_BatchedMatMul_Simulation.compile_and_simulate.cache_info()
+    )
+    softmax_cache_after_second = Softmax_Simulation.compile_and_simulate.cache_info()
+
+    assert first_cycles == second_cycles
+    assert flash_cache_after_first.misses == 6
+    assert flash_cache_after_second.misses == 6
+    assert flash_cache_after_second.hits > flash_cache_after_first.hits
+    assert softmax_cache_after_first.misses == 2
+    assert softmax_cache_after_second.misses == 2
+    assert softmax_cache_after_second.hits > softmax_cache_after_first.hits
+
+
+def test_softmax_get_instance_reuses_same_object():
+    Softmax_Simulation.clear_caches()
+
+    first = Softmax_Simulation.get_instance(dim=(8, 16), weight_bits=16)
+    second = Softmax_Simulation.get_instance(dim=(8, 16), weight_bits=16)
+    third = Softmax_Simulation.get_instance(dim=(8, 32), weight_bits=16)
+
+    assert first is second
+    assert first is not third
 
 
 def test_softmax_compile_and_simulate_supports_time_ns():

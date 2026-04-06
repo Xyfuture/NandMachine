@@ -31,6 +31,8 @@ MatmulType = Literal["QK", "SV", "MLA_QK", "MLA_SV"]
 ReturnUnit = Literal["cycle", "time_ns"]
 ENABLE_FLASHATTN_CLI_HBF_SRAM_BUFFER = True
 SUPPORTED_MATMUL_TYPES: tuple[MatmulType, ...] = ("QK", "SV", "MLA_QK", "MLA_SV")
+_FLASHMLA_MAX_SOFTMAX_ROWS = 262_144
+_FLASHMLA_MAX_MERGED_K = 16_384
 
 
 @dataclass(frozen=True)
@@ -425,6 +427,11 @@ class FlashAttn_BatchedMatMul_Simulation:
 
 
 class FlashMLA_BatchedMatMul_Simulation:
+    @dataclass(frozen=True)
+    class ChunkPlan:
+        blocks_per_chunk: int
+        num_chunks: int
+
     def __init__(
         self,
         qk_latent_dim: tuple[int, int, int, int],
@@ -439,16 +446,56 @@ class FlashMLA_BatchedMatMul_Simulation:
         self.softmax_dim = softmax_dim
         self.weight_bits = weight_bits
 
-    def compile_and_simulate(
+    def _build_chunk_plan_or_none(
         self,
+    ) -> "FlashMLA_BatchedMatMul_Simulation.ChunkPlan | None":
+        b, m, latent_k, _ = self.qk_latent_dim
+        _, _, rope_k, _ = self.qk_rope_dim
+        max_k = max(latent_k, rope_k)
+        if (
+            b * m <= _FLASHMLA_MAX_SOFTMAX_ROWS
+            and b * max_k <= _FLASHMLA_MAX_MERGED_K
+        ):
+            return None
+
+        blocks_per_chunk = max(
+            1,
+            min(
+                b,
+                _FLASHMLA_MAX_SOFTMAX_ROWS // m,
+                _FLASHMLA_MAX_MERGED_K // max_k,
+            ),
+        )
+        return self.ChunkPlan(
+            blocks_per_chunk=blocks_per_chunk,
+            num_chunks=ceil(b / blocks_per_chunk),
+        )
+
+    @staticmethod
+    def _replace_batch_dim(
+        dim: tuple[int, int, int, int],
+        chunk_b: int,
+    ) -> tuple[int, int, int, int]:
+        _, m, k, n = dim
+        return chunk_b, m, k, n
+
+    def _simulate_single_chunk(
+        self,
+        *,
+        chunk_b: int,
+        softmax_dim: tuple[int, int],
         pcb_module: Device,
         nand_config: NandConfig,
         hbm_bandwidth_bytes_per_sec: float,
-        compile_mode: str = "exhaustive",
-        return_unit: ReturnUnit = "cycle",
+        compile_mode: str,
+        return_unit: ReturnUnit,
     ) -> int:
+        qk_latent_dim = self._replace_batch_dim(self.qk_latent_dim, chunk_b)
+        qk_rope_dim = self._replace_batch_dim(self.qk_rope_dim, chunk_b)
+        sv_latent_dim = self._replace_batch_dim(self.sv_latent_dim, chunk_b)
+
         qk_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
-            dim=self.qk_latent_dim,
+            dim=qk_latent_dim,
             weight_bits=self.weight_bits,
             matmul_type="MLA_QK",
         ).compile_and_simulate(
@@ -459,7 +506,7 @@ class FlashMLA_BatchedMatMul_Simulation:
             return_unit=return_unit,
         )
         qk_rope_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
-            dim=self.qk_rope_dim,
+            dim=qk_rope_dim,
             weight_bits=self.weight_bits,
             matmul_type="MLA_QK",
         ).compile_and_simulate(
@@ -469,8 +516,8 @@ class FlashMLA_BatchedMatMul_Simulation:
             compile_mode=compile_mode,
             return_unit=return_unit,
         )
-        softmax_time = Softmax_Simulation(
-            dim=self.softmax_dim,
+        softmax_time = Softmax_Simulation.get_instance(
+            dim=softmax_dim,
             weight_bits=self.weight_bits,
         ).compile_and_simulate(
             pcb_module=pcb_module,
@@ -478,7 +525,7 @@ class FlashMLA_BatchedMatMul_Simulation:
             return_unit=return_unit,
         )
         sv_latent_time = FlashAttn_BatchedMatMul_Simulation.get_instance(
-            dim=self.sv_latent_dim,
+            dim=sv_latent_dim,
             weight_bits=self.weight_bits,
             matmul_type="MLA_SV",
         ).compile_and_simulate(
@@ -488,12 +535,45 @@ class FlashMLA_BatchedMatMul_Simulation:
             compile_mode=compile_mode,
             return_unit=return_unit,
         )
-        # print(f"qk : {qk_latent_time}\
-        #       qk_rope: {qk_rope_time}\
-        #         softmax: {softmax_time}\
-        #         sv:{sv_latent_time}")
-        # return qk_latent_time + qk_rope_time + softmax_time + sv_latent_time
-        return qk_latent_time + qk_rope_time + sv_latent_time//2 
+        del softmax_time
+        return qk_latent_time + qk_rope_time + sv_latent_time // 2
+
+    def compile_and_simulate(
+        self,
+        pcb_module: Device,
+        nand_config: NandConfig,
+        hbm_bandwidth_bytes_per_sec: float,
+        compile_mode: str = "exhaustive",
+        return_unit: ReturnUnit = "cycle",
+    ) -> int:
+        chunk_plan = self._build_chunk_plan_or_none()
+        if chunk_plan is None:
+            return self._simulate_single_chunk(
+                chunk_b=self.qk_latent_dim[0],
+                softmax_dim=self.softmax_dim,
+                pcb_module=pcb_module,
+                nand_config=nand_config,
+                hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+                compile_mode=compile_mode,
+                return_unit=return_unit,
+            )
+
+        total_time = 0
+        remaining_blocks = self.qk_latent_dim[0]
+        _, softmax_n = self.softmax_dim
+        while remaining_blocks > 0:
+            chunk_b = min(chunk_plan.blocks_per_chunk, remaining_blocks)
+            total_time += self._simulate_single_chunk(
+                chunk_b=chunk_b,
+                softmax_dim=(chunk_b, softmax_n),
+                pcb_module=pcb_module,
+                nand_config=nand_config,
+                hbm_bandwidth_bytes_per_sec=hbm_bandwidth_bytes_per_sec,
+                compile_mode=compile_mode,
+                return_unit=return_unit,
+            )
+            remaining_blocks -= chunk_b
+        return total_time
 
 class MatMul_Simulation: # MNK指M*K的矩阵与K*N的矩阵相乘，输出M*N的矩阵
     @dataclass(frozen=True)
@@ -1924,6 +2004,28 @@ class Softmax_Simulation:
             self.M, self.N, self.precision
         )
 
+    @classmethod
+    def get_instance(
+        cls,
+        dim: tuple[int, int],
+        weight_bits: int = 16,
+    ) -> "Softmax_Simulation":
+        return cls._get_cached_instance(cls, dim, weight_bits)
+
+    @classmethod
+    def clear_caches(cls) -> None:
+        cls._get_cached_instance.cache_clear()
+        cls._compile_and_simulate_result.cache_clear()
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _get_cached_instance(
+        cls: type["Softmax_Simulation"],
+        dim: tuple[int, int],
+        weight_bits: int,
+    ) -> "Softmax_Simulation":
+        return cls(dim=dim, weight_bits=weight_bits)
+
     def print_latency(self):
         print(f"{self.output_shape}, {self.latency_on_gpu*1e6}us")
 
@@ -2017,13 +2119,24 @@ class Softmax_Simulation:
             best_time_ns=_cycle_count_to_time_ns(min_cycle_count, pcb_module),
         )
 
+    @lru_cache(maxsize=256)
+    def _compile_and_simulate_result(
+        self,
+        pcb_module: Device,
+        compile_mode=None,
+    ) -> "Softmax_Simulation.CompileResult":
+        return self._build_compile_result(
+            pcb_module=pcb_module,
+            compile_mode=compile_mode,
+        )
+
     def compile_and_simulate(
         self,
         pcb_module: Device,
         compile_mode=None,
         return_unit: ReturnUnit = "cycle",
     ):
-        result = self._build_compile_result(
+        result = self._compile_and_simulate_result(
             pcb_module=pcb_module,
             compile_mode=compile_mode,
         )
@@ -2037,6 +2150,9 @@ class Softmax_Simulation:
         if return_unit == "time_ns":
             return result.best_time_ns
         raise ValueError(f"Unsupported return_unit: {return_unit}")
+
+    compile_and_simulate.cache_info = _compile_and_simulate_result.cache_info
+    compile_and_simulate.cache_clear = _compile_and_simulate_result.cache_clear
 
     def simulate(
         self,

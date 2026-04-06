@@ -159,8 +159,10 @@ class MLAHBMKernel(HBMKernelBase):
                 f"kv_cache_bits must be a positive multiple of 8, got {kv_cache_bits}"
             )
 
+        del local_batch_size
+
         b = local_num_kv_blocks
-        m = local_num_heads * local_batch_size
+        m = local_num_heads
         n = kv_block_size_tokens
 
         return [
@@ -168,7 +170,7 @@ class MLAHBMKernel(HBMKernelBase):
                 qk_latent_bmm_shape=(b, m, kv_lora_rank, n),
                 qk_rope_bmm_shape=(b, m, qk_rope_head_dim, n),
                 sv_latent_bmm_shape=(b, m, n, kv_lora_rank),
-                softmax_shape=(b * m, n),
+                softmax_shape=(b, m * n),
                 weight_bits=kv_cache_bits,
             )
         ]
