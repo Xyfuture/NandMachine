@@ -159,8 +159,8 @@ class MLAHBMKernel(HBMKernelBase):
                 f"kv_cache_bits must be a positive multiple of 8, got {kv_cache_bits}"
             )
 
-        b = local_num_heads * local_num_kv_blocks
-        m = local_batch_size
+        b = local_num_kv_blocks
+        m = local_num_heads * local_batch_size
         n = kv_block_size_tokens
 
         return [
