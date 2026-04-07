@@ -14,6 +14,8 @@ from nandmachine.config.inference_config import (
     InferenceConfig,
     MoEParallelConfig,
     ParallelConfig,
+    resolve_batch_partition_size_or_raise,
+    resolve_local_batch_size_or_raise,
 )
 from nandmachine.config.model_config import (
     DeepseekV3ModelConfig,
@@ -557,12 +559,13 @@ def _build_capacity_result(
 ) -> BatchSizeCapacityResult:
     device = _build_capacity_device_or_raise(device_name, memory_architecture)
     per_rank_capacity_bytes = device.total_memory_capacity_bytes
-    per_rank_used_bytes = per_rank_weight_bytes + global_kv_cache_bytes
-    per_rank_remaining_bytes = per_rank_capacity_bytes - per_rank_used_bytes
     total_capacity_bytes = per_rank_capacity_bytes * parallelism.num_ranks
     total_weight_bytes = per_rank_weight_bytes * parallelism.num_ranks
     total_kv_cache_bytes = global_kv_cache_bytes
     total_used_bytes = total_weight_bytes + total_kv_cache_bytes
+    per_rank_kv_cache_bytes = _ceil_div(total_kv_cache_bytes, parallelism.num_ranks)
+    per_rank_used_bytes = per_rank_weight_bytes + per_rank_kv_cache_bytes
+    per_rank_remaining_bytes = per_rank_capacity_bytes - per_rank_used_bytes
 
     return BatchSizeCapacityResult(
         device_name=device_name,
@@ -574,7 +577,7 @@ def _build_capacity_result(
         ffn_tp_size=getattr(parallelism, "ffn_tp_size", None),
         per_rank_capacity_bytes=per_rank_capacity_bytes,
         per_rank_weight_bytes=per_rank_weight_bytes,
-        per_rank_kv_cache_bytes=global_kv_cache_bytes,
+        per_rank_kv_cache_bytes=per_rank_kv_cache_bytes,
         per_rank_used_bytes=per_rank_used_bytes,
         per_rank_remaining_bytes=per_rank_remaining_bytes,
         total_capacity_bytes=total_capacity_bytes,
@@ -592,6 +595,7 @@ def validate_batch_size_or_raise(
 ) -> BatchSizeCapacityResult:
     if inference_config.batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {inference_config.batch_size}")
+    resolve_local_batch_size_or_raise(inference_config)
 
     if isinstance(model_config, (Qwen3ModelConfig, LlamaModelConfig)):
         dense_model_config = _require_dense_model_config(model_config)
@@ -643,12 +647,12 @@ def validate_batch_size_or_raise(
         global_kv_cache_bytes,
     )
 
-    if result.per_rank_used_bytes > result.per_rank_capacity_bytes:
+    if result.total_used_bytes > result.total_capacity_bytes:
         raise InsufficientGPUMemoryError(
             "Insufficient GPU memory for requested batch size: "
             f"device_name={device_name}, batch_size={inference_config.batch_size}, "
-            f"per_rank_used_bytes={result.per_rank_used_bytes}, "
-            f"per_rank_capacity_bytes={result.per_rank_capacity_bytes}"
+            f"total_used_bytes={result.total_used_bytes}, "
+            f"total_capacity_bytes={result.total_capacity_bytes}"
         )
 
     return result
@@ -667,6 +671,7 @@ def calculate_max_batch_size(
         raise ValueError(
             "Cannot calculate finite maximum batch size when peak sequence length is zero"
         )
+    batch_step = resolve_batch_partition_size_or_raise(inference_config.parallel_config)
 
     def _validate_candidate(batch_size: int) -> BatchSizeCapacityResult:
         candidate_config = replace(inference_config, batch_size=batch_size)
@@ -678,32 +683,34 @@ def calculate_max_batch_size(
         )
 
     try:
-        best_result = _validate_candidate(1)
+        best_result = _validate_candidate(batch_step)
     except InsufficientGPUMemoryError as exc:
         raise InsufficientGPUMemoryError(
-            f"Batch size 1 does not fit on device_name={device_name}"
+            f"Batch size {batch_step} does not fit on device_name={device_name}"
         ) from exc
 
-    lower_bound = 1
-    upper_bound = 1
+    lower_multiplier = 1
+    upper_multiplier = 1
 
     while True:
-        candidate_batch_size = upper_bound * 2
+        candidate_multiplier = upper_multiplier * 2
+        candidate_batch_size = candidate_multiplier * batch_step
         try:
             best_result = _validate_candidate(candidate_batch_size)
         except InsufficientGPUMemoryError:
             break
-        lower_bound = candidate_batch_size
-        upper_bound = candidate_batch_size
+        lower_multiplier = candidate_multiplier
+        upper_multiplier = candidate_multiplier
 
-    failed_upper_bound = upper_bound * 2
-    left = lower_bound + 1
-    right = failed_upper_bound - 1
+    failed_upper_multiplier = upper_multiplier * 2
+    left = lower_multiplier + 1
+    right = failed_upper_multiplier - 1
 
     while left <= right:
         mid = (left + right) // 2
+        candidate_batch_size = mid * batch_step
         try:
-            candidate_result = _validate_candidate(mid)
+            candidate_result = _validate_candidate(candidate_batch_size)
         except InsufficientGPUMemoryError:
             right = mid - 1
             continue

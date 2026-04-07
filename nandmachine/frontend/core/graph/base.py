@@ -13,7 +13,10 @@ from torch.fx.node import Argument
 from nandmachine.commands.macro import MacroOp
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import InferenceConfig
+from nandmachine.config.inference_config import (
+    InferenceConfig,
+    resolve_local_batch_size_or_raise,
+)
 from nandmachine.config.model_config import ModelConfigBase
 
 
@@ -53,6 +56,10 @@ class NxGraphMeta:
         if self._batch_size_override is not None:
             return self._batch_size_override
 
+        return resolve_local_batch_size_or_raise(self.inference_config)
+
+    @property
+    def global_batch_size(self) -> int:
         batch_size = self.inference_config.batch_size
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")

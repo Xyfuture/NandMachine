@@ -5,7 +5,10 @@ from random import Random
 
 from nandmachine.config.cache_state import KVCacheState
 from nandmachine.config.config import NandConfig
-from nandmachine.config.inference_config import InferenceConfig
+from nandmachine.config.inference_config import (
+    InferenceConfig,
+    resolve_local_batch_size_or_raise,
+)
 from nandmachine.config.model_config import ModelConfigBase
 
 
@@ -122,6 +125,8 @@ def calculate_kv_cache_state(
         raise ValueError(
             f"kv_block_size_bytes must be positive, got {inference_config.kv_block_size_bytes}"
         )
+
+    resolve_local_batch_size_or_raise(inference_config)
 
     layout = _resolve_attention_layout_legacy(model_config)
     peak_sequence_length = (

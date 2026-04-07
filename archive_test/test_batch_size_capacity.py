@@ -273,7 +273,7 @@ def test_validate_batch_size_parallel_config_is_pure_dp():
         num_hidden_layers=2,
     )
     inference_config = _make_inference_config(
-        10,
+        12,
         parallel_config=ParallelConfig(num_ranks=4),
     )
 
@@ -292,8 +292,9 @@ def test_validate_batch_size_parallel_config_is_pure_dp():
         + (2 * 1024)
     )
     expected_per_rank_weight_bytes = per_layer_weight_params * 2 * 2
-    per_layer_kv_values = 10 * (8 + 4) * 2 * 128 * 2
-    expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
+    per_layer_kv_values = 12 * (8 + 4) * 2 * 128 * 2
+    expected_total_kv_bytes = per_layer_kv_values * 2 * 2
+    expected_per_rank_kv_bytes = expected_total_kv_bytes // 4
 
     assert result.num_ranks == 4
     assert result.dp_size == 4
@@ -301,10 +302,43 @@ def test_validate_batch_size_parallel_config_is_pure_dp():
     assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
     assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
     assert result.total_weight_bytes == expected_per_rank_weight_bytes * 4
-    assert result.total_kv_cache_bytes == expected_per_rank_kv_bytes
+    assert result.total_kv_cache_bytes == expected_total_kv_bytes
 
 
-def test_validate_batch_size_parallel_config_pure_dp_keeps_global_kv_cache():
+def test_validate_batch_size_parallel_config_pure_dp_evenly_splits_global_kv_cache():
+    model_config = Qwen3ModelConfig(
+        hidden_size=1024,
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        max_position_embeddings=4096,
+        intermediate_size=2048,
+        hidden_act="silu",
+        head_dim=128,
+        num_hidden_layers=2,
+    )
+    inference_config = _make_inference_config(
+        12,
+        parallel_config=ParallelConfig(num_ranks=4),
+    )
+
+    result = validate_batch_size_or_raise(
+        "A100_80GB",
+        HBM_ONLY_MEMORY_ARCHITECTURE,
+        model_config,
+        inference_config,
+    )
+
+    per_layer_kv_values = 12 * (8 + 4) * 2 * 128 * 2
+    expected_total_kv_bytes = per_layer_kv_values * 2 * 2
+    expected_per_rank_kv_bytes = expected_total_kv_bytes // 4
+
+    assert result.dp_size == 4
+    assert result.tp_size == 1
+    assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
+    assert result.total_kv_cache_bytes == expected_total_kv_bytes
+
+
+def test_validate_batch_size_rejects_non_divisible_global_batch():
     model_config = Qwen3ModelConfig(
         hidden_size=1024,
         num_attention_heads=8,
@@ -320,19 +354,13 @@ def test_validate_batch_size_parallel_config_pure_dp_keeps_global_kv_cache():
         parallel_config=ParallelConfig(num_ranks=4),
     )
 
-    result = validate_batch_size_or_raise(
-        "A100_80GB",
-        HBM_ONLY_MEMORY_ARCHITECTURE,
-        model_config,
-        inference_config,
-    )
-
-    per_layer_kv_values = 10 * (8 + 4) * 2 * 128 * 2
-    expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
-
-    assert result.dp_size == 4
-    assert result.tp_size == 1
-    assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
+    with pytest.raises(ValueError, match="global batch_size must be divisible"):
+        validate_batch_size_or_raise(
+            "A100_80GB",
+            HBM_ONLY_MEMORY_ARCHITECTURE,
+            model_config,
+            inference_config,
+        )
 
 
 def test_validate_batch_size_raises_for_insufficient_gpu_memory():
@@ -583,7 +611,7 @@ def test_validate_batch_size_qwen3_moe_single_rank_counts_router_and_expert_weig
 def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts():
     model_config = _make_qwen3_moe_model_config()
     inference_config = _make_inference_config(
-        9,
+        12,
         parallel_config=MoEParallelConfig(
             num_ranks=4,
             attn_dp_size=4,
@@ -608,8 +636,9 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
         + (4 // 2) * (1024 * ((256 * 2) // 2) + 1024 * (256 // 2))
     )
     expected_per_rank_weight_bytes = per_layer_weight_params * 2 * 2
-    per_layer_kv_values = 9 * (8 + 4) * 2 * 128 * 2
-    expected_per_rank_kv_bytes = per_layer_kv_values * 2 * 2
+    per_layer_kv_values = 12 * (8 + 4) * 2 * 128 * 2
+    expected_total_kv_bytes = per_layer_kv_values * 2 * 2
+    expected_per_rank_kv_bytes = expected_total_kv_bytes // 4
 
     assert result.num_ranks == 4
     assert result.dp_size == 4
@@ -619,7 +648,7 @@ def test_validate_batch_size_qwen3_moe_multi_rank_splits_attention_and_experts()
     assert result.per_rank_weight_bytes == expected_per_rank_weight_bytes
     assert result.per_rank_kv_cache_bytes == expected_per_rank_kv_bytes
     assert result.total_weight_bytes == expected_per_rank_weight_bytes * 4
-    assert result.total_kv_cache_bytes == expected_per_rank_kv_bytes
+    assert result.total_kv_cache_bytes == expected_total_kv_bytes
 
 
 def test_calculate_max_batch_size_returns_exact_qwen3_moe_limit():
@@ -769,7 +798,7 @@ def test_qwen3_8b_model_card_capacity_matches_expected_scale():
 def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
     model_config = _load_qwen3_moe_235b_model_config()
     inference_config = _make_inference_config(
-        1,
+        128,
         input_sequence_length=2048,
         output_sequence_length=512,
         parallel_config=MoEParallelConfig(
@@ -796,7 +825,7 @@ def test_qwen3_moe_235b_model_card_capacity_matches_expected_scale():
 
     assert result.per_rank_weight_bytes == 17_053_531_136
     assert result.per_rank_kv_cache_bytes == 492_830_720
-    assert max_result.batch_size == 139
+    assert max_result.batch_size == 17_792
 
 
 def test_validate_batch_size_uses_h100_total_capacity_for_hbm_hbf_architectures():
@@ -917,7 +946,7 @@ def test_validate_batch_size_reports_total_capacity_for_multi_rank_h100_csi():
     assert result.per_rank_capacity_bytes == expected_per_rank_capacity_bytes
     assert result.total_capacity_bytes == expected_per_rank_capacity_bytes * 4
     assert result.total_weight_bytes == result.per_rank_weight_bytes * 4
-    assert result.total_kv_cache_bytes == result.per_rank_kv_cache_bytes
+    assert result.total_kv_cache_bytes == result.per_rank_kv_cache_bytes * 4
 
 
 def test_calculate_max_batch_size_scales_up_for_h100_csi():

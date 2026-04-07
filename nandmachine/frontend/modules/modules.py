@@ -367,7 +367,7 @@ class Attention(HookModuleBase):
             raise ValueError(
                 f"Attention dp_size must be {actual_dp_size}, got {self.dp_size}"
             )
-        local_batch_size = math.ceil(graph_meta.batch_size/self.dp_size)
+        local_batch_size = graph_meta.batch_size
 
         group_size = divide(self.local_num_heads, self.local_num_kv_heads)
         num_kv_heads = self.local_num_kv_heads
@@ -564,7 +564,7 @@ class MLAAttention(HookModuleBase):
                 f"MLAAttention tp_size must be {parallel_config.attn_tp_size}, got {self.tp_size}"
             )
 
-        local_batch_size = math.ceil(graph_meta.batch_size/ self.dp_size)
+        local_batch_size = graph_meta.batch_size
         peak_sequence_length = (
             inference_config.input_sequence_length + inference_config.output_sequence_length
         )

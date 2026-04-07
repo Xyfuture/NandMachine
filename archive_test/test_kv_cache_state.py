@@ -62,7 +62,7 @@ def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_global_batch():
         attention_type="gqa",
     )
     inference_config = make_inference_config(
-        batch_size=10,
+        batch_size=12,
         input_sequence_length=128,
         output_sequence_length=32,
         kv_cache_bits=16,
@@ -75,11 +75,11 @@ def test_calculate_kv_cache_state_for_gqa_uses_peak_length_and_global_batch():
         inference_config,
     )
 
-    assert state.total_kv_cache_size_per_layer == 6_553_600
-    assert state.num_nand_pages_per_layer == 6_400
-    assert state.num_hyper_pages_per_layer == 1_600
+    assert state.total_kv_cache_size_per_layer == 7_864_320
+    assert state.num_nand_pages_per_layer == 7_680
+    assert state.num_hyper_pages_per_layer == 1_920
     assert state.kv_block_size_tokens == 16
-    assert state.num_kv_blocks == 100
+    assert state.num_kv_blocks == 120
 
 
 def test_calculate_kv_cache_state_for_mha_uses_attention_heads_as_kv_heads():
@@ -258,7 +258,7 @@ def test_calculate_kv_cache_state_ignores_moe_parallelism_when_sizing_global_kv_
     assert state.num_kv_blocks == 40
 
 
-def test_calculate_kv_cache_state_ignores_num_ranks_when_sizing_global_kv_cache():
+def test_calculate_kv_cache_state_rejects_non_divisible_global_batch():
     model_config = Qwen3ModelConfig(
         hidden_size=1024,
         num_attention_heads=8,
@@ -277,17 +277,12 @@ def test_calculate_kv_cache_state_ignores_num_ranks_when_sizing_global_kv_cache(
         parallel_config=ParallelConfig(num_ranks=4),
     )
 
-    state = calculate_kv_cache_state(
-        make_nand_config(page_size=1, num_plane=2),
-        model_config,
-        inference_config,
-    )
-
-    assert state.total_kv_cache_size_per_layer == 147_456
-    assert state.num_nand_pages_per_layer == 144
-    assert state.num_hyper_pages_per_layer == 72
-    assert state.kv_block_size_tokens == 32
-    assert state.num_kv_blocks == 3
+    with pytest.raises(ValueError, match="global batch_size must be divisible"):
+        calculate_kv_cache_state(
+            make_nand_config(page_size=1, num_plane=2),
+            model_config,
+            inference_config,
+        )
 
 
 def test_calculate_kv_cache_state_supports_llama_gqa_config():
@@ -408,7 +403,7 @@ def test_build_imbalanced_kv_cache_state_uses_balanced_hyper_page_size_with_chan
         sram_threshold=1,
     )
     inference_config = make_inference_config(
-        batch_size=10,
+        batch_size=12,
         input_sequence_length=128,
         output_sequence_length=32,
         kv_cache_bits=16,
@@ -430,8 +425,8 @@ def test_build_imbalanced_kv_cache_state_uses_balanced_hyper_page_size_with_chan
     assert imbalanced_state.num_nand_pages_per_layer == balanced_state.num_nand_pages_per_layer
     assert imbalanced_state.kv_block_size_tokens == balanced_state.kv_block_size_tokens
     assert imbalanced_state.num_kv_blocks == balanced_state.num_kv_blocks
-    assert balanced_state.num_hyper_pages_per_layer == 100
-    assert imbalanced_state.num_hyper_pages_per_layer == 100
+    assert balanced_state.num_hyper_pages_per_layer == 120
+    assert imbalanced_state.num_hyper_pages_per_layer == 120
 
 
 def test_calculate_kv_cache_state_uses_num_channels_in_hyper_page_count():

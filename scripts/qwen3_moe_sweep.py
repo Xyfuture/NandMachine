@@ -3,13 +3,25 @@ from __future__ import annotations
 import csv
 import json
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from math import ceil
 from pathlib import Path
 from typing import Any
+
+_SINGLE_THREAD_RUNTIME_ENV_DEFAULTS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+}
+DEFAULT_MAX_WORKERS_CPU_DIVISOR = 1
+TORCH_NUM_INTEROP_THREADS = 1
+
+for _env_name, _env_value in _SINGLE_THREAD_RUNTIME_ENV_DEFAULTS.items():
+    os.environ.setdefault(_env_name, _env_value)
 
 import torch
 from Desim import SimSession
@@ -39,7 +51,8 @@ SUMMARY_CSV_PATH = TRACE_ROOT / "qwen3_moe_sweep_summary.csv"
 FULL_TRACE_FILE_NAME = "full_simulation.json"
 CONFIG_FILE_NAME = "config.json"
 COMPILE_MODE = "heuristic-GPU"
-MAX_WORKERS = min(8, os.cpu_count() or 1)
+MAX_WORKERS_ENV_VAR = "QWEN3_MOE_SWEEP_MAX_WORKERS"
+CASE_LIMIT_ENV_VAR = "QWEN3_MOE_SWEEP_CASE_LIMIT"
 
 BASE_NAND_CONFIG = {
     "num_channels": 6 * 8,
@@ -58,17 +71,25 @@ KV_CACHE_BITS = 16
 KV_BLOCK_SIZE_BYTES = 1024 * 256
 
 SEQUENCE_LENGTHS: tuple[tuple[int, int], ...] = (
-    (8 * 1024, 1 * 1024),
     (9400, 600),
-    (20 * 1024, 1 * 1024),
 )
-BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
-    4: (32, 64, 128),
-    8: (64, 128, 256),
-    16: (128, 256, 512),
+HBM_ONLY_BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
+    4: (4, 12, 24, 48),
+    8: (40, 80, 160, 320),
+    16: (128, 240, 480, 896),
 }
-
-SIMULATION_LOCK = threading.Lock()
+CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS: dict[int, dict[int, tuple[int, ...]]] = {
+    100: {
+        4: (1024, 512, 256, 128),
+        8: (2048, 1024, 512, 256),
+        16: (4096, 2048, 1024, 512),
+    },
+    50: {
+        4: (512, 256, 128, 64),
+        8: (1024, 512, 256, 128),
+        16: (2048, 1024, 512, 256),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +107,7 @@ class SweepCase:
     batch_size: int
     input_sequence_length: int
     output_sequence_length: int
+    slo_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -95,13 +117,67 @@ class RuntimeSpec:
     normalized_architecture: dict[str, str | int]
 
 
+def configure_runtime_thread_limits() -> None:
+    torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
+    torch.set_num_interop_threads(TORCH_NUM_INTEROP_THREADS)
+
+
+configure_runtime_thread_limits()
+
+
+def resolve_worker_count_source() -> str:
+    if os.getenv(MAX_WORKERS_ENV_VAR) is not None:
+        return "env"
+    return f"cpu_div_{DEFAULT_MAX_WORKERS_CPU_DIVISOR}"
+
+
+def resolve_case_limit(case_count: int) -> int:
+    if case_count <= 0:
+        raise ValueError(f"case_count must be > 0, got {case_count}")
+
+    env_value = os.getenv(CASE_LIMIT_ENV_VAR)
+    if env_value is None:
+        return case_count
+
+    try:
+        configured_case_limit = int(env_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{CASE_LIMIT_ENV_VAR} must be an integer, got {env_value!r}"
+        ) from exc
+
+    if configured_case_limit <= 0:
+        raise ValueError(
+            f"{CASE_LIMIT_ENV_VAR} must be > 0, got {configured_case_limit}"
+        )
+
+    return min(configured_case_limit, case_count)
+
+
+def resolve_max_workers(case_count: int) -> int:
+    if case_count <= 0:
+        raise ValueError(f"case_count must be > 0, got {case_count}")
+
+    env_value = os.getenv(MAX_WORKERS_ENV_VAR)
+    if env_value is not None:
+        try:
+            configured_max_workers = int(env_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"{MAX_WORKERS_ENV_VAR} must be an integer, got {env_value!r}"
+            ) from exc
+        if configured_max_workers <= 0:
+            raise ValueError(
+                f"{MAX_WORKERS_ENV_VAR} must be > 0, got {configured_max_workers}"
+            )
+    else:
+        cpu_count = os.cpu_count() or 1
+        configured_max_workers = max(1, cpu_count // DEFAULT_MAX_WORKERS_CPU_DIVISOR)
+
+    return min(configured_max_workers, case_count)
+
+
 HARDWARE_SPECS: tuple[HardwareSpec, ...] = (
-    HardwareSpec(
-        hardware_type="H100-HBM",
-        device_name="H100_SXM",
-        memory_architecture={"mode": "hbm_only"},
-        memory_backend="hbm",
-    ),
     HardwareSpec(
         hardware_type="H200-HBM",
         device_name="H200_SXM",
@@ -125,6 +201,16 @@ HARDWARE_SPECS: tuple[HardwareSpec, ...] = (
 CSV_FIELDNAMES = [
     "hardware_type",
     "device_name",
+    "model_card_path",
+    "compile_mode",
+    "batch_size_semantics",
+    "capacity_rule",
+    "case_limit",
+    "selected_case_count",
+    "total_case_count",
+    "max_workers",
+    "worker_count_source",
+    "host_logical_cpu_count",
     "memory_architecture_mode",
     "effective_hbm_stacks",
     "effective_hbf_stacks",
@@ -134,15 +220,37 @@ CSV_FIELDNAMES = [
     "attn_tp_size",
     "ffn_tp_size",
     "ffn_ep_size",
+    "slo_ms",
     "batch_size",
     "input_sequence_length",
     "output_sequence_length",
+    "weight_bits",
+    "activation_bits",
+    "kv_cache_bits",
+    "kv_block_size_bytes",
+    "omp_num_threads",
+    "openblas_num_threads",
+    "mkl_num_threads",
+    "numexpr_num_threads",
+    "blis_num_threads",
+    "torch_num_threads",
+    "torch_num_interop_threads",
+    "nand_num_channels",
+    "nand_num_plane",
+    "nand_num_block",
+    "nand_num_pages",
+    "nand_tRead",
+    "nand_tWrite",
+    "nand_tErase",
+    "nand_page_size_kb",
+    "nand_sram_threshold_kb",
     "sim_hbm_bandwidth_GBps",
     "derived_hbf_bandwidth_GBps",
     "macro_op_count",
     "layer_latency_ns",
     "model_latency_ns",
     "model_throughput_tokens_per_sec",
+    "throughput_per_GPU",
     "total_used_bytes",
     "total_weight_bytes",
     "total_kv_cache_bytes",
@@ -153,18 +261,35 @@ CSV_FIELDNAMES = [
 def build_sweep_cases() -> list[SweepCase]:
     cases: list[SweepCase] = []
     for hardware_spec in HARDWARE_SPECS:
-        for num_ranks, batch_sizes in BATCH_SIZES_BY_RANKS.items():
-            for input_sequence_length, output_sequence_length in SEQUENCE_LENGTHS:
-                for batch_size in batch_sizes:
-                    cases.append(
-                        SweepCase(
-                            hardware_type=hardware_spec.hardware_type,
-                            num_ranks=num_ranks,
-                            batch_size=batch_size,
-                            input_sequence_length=input_sequence_length,
-                            output_sequence_length=output_sequence_length,
+        mode = str(hardware_spec.memory_architecture["mode"])
+        if mode == "cli":
+            continue
+
+        batch_sizes_by_ranks_by_slo: dict[int | None, dict[int, tuple[int, ...]]]
+        if mode == "hbm_only":
+            batch_sizes_by_ranks_by_slo = {None: HBM_ONLY_BATCH_SIZES_BY_RANKS}
+        elif mode == "csi":
+            batch_sizes_by_ranks_by_slo = {
+                slo_ms: batch_sizes_by_ranks
+                for slo_ms, batch_sizes_by_ranks in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS.items()
+            }
+        else:
+            raise AssertionError(f"Unhandled memory_architecture mode: {mode}")
+
+        for slo_ms, batch_sizes_by_ranks in batch_sizes_by_ranks_by_slo.items():
+            for num_ranks, batch_sizes in batch_sizes_by_ranks.items():
+                for input_sequence_length, output_sequence_length in SEQUENCE_LENGTHS:
+                    for batch_size in batch_sizes:
+                        cases.append(
+                            SweepCase(
+                                hardware_type=hardware_spec.hardware_type,
+                                num_ranks=num_ranks,
+                                batch_size=batch_size,
+                                input_sequence_length=input_sequence_length,
+                                output_sequence_length=output_sequence_length,
+                                slo_ms=slo_ms,
+                            )
                         )
-                    )
     return cases
 
 
@@ -374,10 +499,12 @@ def run_macro_ops_with_trace(
 
 
 def build_trace_dir(case: SweepCase) -> Path:
+    slo_segment = "slo_none" if case.slo_ms is None else f"slo_{case.slo_ms}ms"
     return (
         TRACE_ROOT
         / case.hardware_type
         / f"ranks_{case.num_ranks}"
+        / slo_segment
         / f"isl_{case.input_sequence_length}_osl_{case.output_sequence_length}"
         / f"bs_{case.batch_size}"
     )
@@ -388,7 +515,25 @@ def write_json_file(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def build_result_row(case: SweepCase) -> dict[str, object]:
+def build_result_row(
+    case: SweepCase,
+    max_workers: int,
+    selected_case_count: int,
+    total_case_count: int,
+) -> dict[str, object]:
+    if max_workers <= 0:
+        raise ValueError(f"max_workers must be > 0, got {max_workers}")
+    if selected_case_count <= 0:
+        raise ValueError(
+            f"selected_case_count must be > 0, got {selected_case_count}"
+        )
+    if total_case_count <= 0:
+        raise ValueError(f"total_case_count must be > 0, got {total_case_count}")
+    if selected_case_count > total_case_count:
+        raise ValueError(
+            "selected_case_count must be <= total_case_count, "
+            f"got selected_case_count={selected_case_count}, total_case_count={total_case_count}"
+        )
     hardware_spec = get_hardware_spec_or_raise(case.hardware_type)
     model_card = load_model_card_or_raise()
     raw_model_config = build_raw_model_config(deepcopy(model_card))
@@ -428,25 +573,36 @@ def build_result_row(case: SweepCase) -> dict[str, object]:
 
     trace_dir = build_trace_dir(case)
     trace_path = trace_dir / FULL_TRACE_FILE_NAME
-    with SIMULATION_LOCK:
-        sim_result = run_macro_ops_with_trace(
-            nand_config,
-            macro_op_list,
-            trace_path=trace_path,
-            device_name=hardware_spec.device_name,
-            compile_mode=COMPILE_MODE,
-            hbm_bandwidth_GBps=runtime_spec.sim_hbm_bandwidth_GBps,
-        )
+    sim_result = run_macro_ops_with_trace(
+        nand_config,
+        macro_op_list,
+        trace_path=trace_path,
+        device_name=hardware_spec.device_name,
+        compile_mode=COMPILE_MODE,
+        hbm_bandwidth_GBps=runtime_spec.sim_hbm_bandwidth_GBps,
+    )
 
     layer_latency_ns = int(sim_result["time_ns"])
     model_latency_ns = layer_latency_ns * model_config.num_hidden_layers
     if model_latency_ns <= 0:
         raise ValueError(f"model_latency_ns must be > 0, got {model_latency_ns}")
     model_throughput_tokens_per_sec = case.batch_size * 1e9 / model_latency_ns
+    throughput_per_gpu = model_throughput_tokens_per_sec / case.num_ranks
+    host_logical_cpu_count = os.cpu_count() or 1
 
     row = {
         "hardware_type": hardware_spec.hardware_type,
         "device_name": hardware_spec.device_name,
+        "model_card_path": str(MODEL_CARD_PATH),
+        "compile_mode": COMPILE_MODE,
+        "batch_size_semantics": "global",
+        "capacity_rule": "total_capacity_minus_total_weight",
+        "case_limit": os.getenv(CASE_LIMIT_ENV_VAR),
+        "selected_case_count": selected_case_count,
+        "total_case_count": total_case_count,
+        "max_workers": max_workers,
+        "worker_count_source": resolve_worker_count_source(),
+        "host_logical_cpu_count": host_logical_cpu_count,
         "memory_architecture_mode": runtime_spec.normalized_architecture["mode"],
         "effective_hbm_stacks": runtime_spec.normalized_architecture["effective_hbm_stacks"],
         "effective_hbf_stacks": runtime_spec.normalized_architecture["effective_hbf_stacks"],
@@ -456,15 +612,37 @@ def build_result_row(case: SweepCase) -> dict[str, object]:
         "attn_tp_size": parallel_config.attn_tp_size,
         "ffn_tp_size": parallel_config.ffn_tp_size,
         "ffn_ep_size": parallel_config.ffn_ep_size,
+        "slo_ms": case.slo_ms,
         "batch_size": case.batch_size,
         "input_sequence_length": case.input_sequence_length,
         "output_sequence_length": case.output_sequence_length,
+        "weight_bits": WEIGHT_BITS,
+        "activation_bits": ACTIVATION_BITS,
+        "kv_cache_bits": KV_CACHE_BITS,
+        "kv_block_size_bytes": KV_BLOCK_SIZE_BYTES,
+        "omp_num_threads": os.environ["OMP_NUM_THREADS"],
+        "openblas_num_threads": os.environ["OPENBLAS_NUM_THREADS"],
+        "mkl_num_threads": os.environ["MKL_NUM_THREADS"],
+        "numexpr_num_threads": os.environ["NUMEXPR_NUM_THREADS"],
+        "blis_num_threads": os.environ["BLIS_NUM_THREADS"],
+        "torch_num_threads": torch.get_num_threads(),
+        "torch_num_interop_threads": TORCH_NUM_INTEROP_THREADS,
+        "nand_num_channels": nand_config.num_channels,
+        "nand_num_plane": nand_config.num_plane,
+        "nand_num_block": nand_config.num_block,
+        "nand_num_pages": nand_config.num_pages,
+        "nand_tRead": nand_config.tRead,
+        "nand_tWrite": nand_config.tWrite,
+        "nand_tErase": nand_config.tErase,
+        "nand_page_size_kb": nand_config.page_size,
+        "nand_sram_threshold_kb": nand_config.sram_threshold,
         "sim_hbm_bandwidth_GBps": runtime_spec.sim_hbm_bandwidth_GBps,
         "derived_hbf_bandwidth_GBps": runtime_spec.derived_hbf_bandwidth_GBps,
         "macro_op_count": len(macro_op_list),
         "layer_latency_ns": layer_latency_ns,
         "model_latency_ns": model_latency_ns,
         "model_throughput_tokens_per_sec": model_throughput_tokens_per_sec,
+        "throughput_per_GPU": throughput_per_gpu,
         "total_used_bytes": capacity_result.total_used_bytes,
         "total_weight_bytes": capacity_result.total_weight_bytes,
         "total_kv_cache_bytes": capacity_result.total_kv_cache_bytes,
@@ -472,6 +650,58 @@ def build_result_row(case: SweepCase) -> dict[str, object]:
     }
 
     config_payload = {
+        "script_config": {
+            "model_card_path": str(MODEL_CARD_PATH),
+            "trace_root": str(TRACE_ROOT),
+            "summary_csv_path": str(SUMMARY_CSV_PATH),
+            "full_trace_file_name": FULL_TRACE_FILE_NAME,
+            "config_file_name": CONFIG_FILE_NAME,
+            "compile_mode": COMPILE_MODE,
+            "batch_size_semantics": "global",
+            "capacity_rule": "total_capacity_minus_total_weight",
+            "case_limit": os.getenv(CASE_LIMIT_ENV_VAR),
+            "case_limit_env_var": CASE_LIMIT_ENV_VAR,
+            "selected_case_count": selected_case_count,
+            "total_case_count": total_case_count,
+            "max_workers": max_workers,
+            "max_workers_env_var": MAX_WORKERS_ENV_VAR,
+            "worker_count_source": resolve_worker_count_source(),
+            "host_logical_cpu_count": host_logical_cpu_count,
+            "default_max_workers_cpu_divisor": DEFAULT_MAX_WORKERS_CPU_DIVISOR,
+            "weight_bits": WEIGHT_BITS,
+            "activation_bits": ACTIVATION_BITS,
+            "kv_cache_bits": KV_CACHE_BITS,
+            "kv_block_size_bytes": KV_BLOCK_SIZE_BYTES,
+            "runtime_thread_env": dict(_SINGLE_THREAD_RUNTIME_ENV_DEFAULTS),
+            "resolved_runtime_thread_env": {
+                env_name: os.environ[env_name]
+                for env_name in _SINGLE_THREAD_RUNTIME_ENV_DEFAULTS
+            },
+            "torch_runtime": {
+                "torch_num_threads": torch.get_num_threads(),
+                "torch_num_interop_threads": TORCH_NUM_INTEROP_THREADS,
+            },
+            "base_nand_config": BASE_NAND_CONFIG,
+            "sequence_lengths": [
+                {
+                    "input_sequence_length": input_sequence_length,
+                    "output_sequence_length": output_sequence_length,
+                }
+                for input_sequence_length, output_sequence_length in SEQUENCE_LENGTHS
+            ],
+            "hbm_only_batch_sizes_by_ranks": {
+                str(num_ranks): list(batch_sizes)
+                for num_ranks, batch_sizes in HBM_ONLY_BATCH_SIZES_BY_RANKS.items()
+            },
+            "csi_batch_sizes_by_ranks_by_slo_ms": {
+                str(slo_ms): {
+                    str(num_ranks): list(batch_sizes)
+                    for num_ranks, batch_sizes in batch_sizes_by_ranks.items()
+                }
+                for slo_ms, batch_sizes_by_ranks in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS.items()
+            },
+        },
+        "model_config": asdict(model_config),
         "hardware_spec": asdict(hardware_spec),
         "sweep_case": asdict(case),
         "parallel_config": asdict(parallel_config),
@@ -487,6 +717,7 @@ def build_result_row(case: SweepCase) -> dict[str, object]:
             "layer_latency_ns": layer_latency_ns,
             "model_latency_ns": model_latency_ns,
             "model_throughput_tokens_per_sec": model_throughput_tokens_per_sec,
+            "throughput_per_GPU": throughput_per_gpu,
             "macro_op_count": len(macro_op_list),
             "trace_path": sim_result["trace_path"],
             "trace_event_count": sim_result["trace_event_count"],
@@ -513,13 +744,24 @@ def write_summary_csv(rows: list[dict[str, object]]) -> None:
 
 def run_sweep() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    cases = build_sweep_cases()
-    if not cases:
+    all_cases = build_sweep_cases()
+    if not all_cases:
         raise ValueError("Sweep cases must not be empty")
+    total_case_count = len(all_cases)
+    case_limit = resolve_case_limit(total_case_count)
+    cases = all_cases[:case_limit]
+    selected_case_count = len(cases)
+    max_workers = resolve_max_workers(selected_case_count)
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_to_case = {
-            executor.submit(build_result_row, case): case
+            executor.submit(
+                build_result_row,
+                case,
+                max_workers,
+                selected_case_count,
+                total_case_count,
+            ): case
             for case in cases
         }
         for future in as_completed(future_to_case):
@@ -529,6 +771,7 @@ def run_sweep() -> list[dict[str, object]]:
         key=lambda row: (
             str(row["hardware_type"]),
             int(row["num_ranks"]),
+            -1 if row["slo_ms"] is None else int(row["slo_ms"]),
             int(row["input_sequence_length"]),
             int(row["output_sequence_length"]),
             int(row["batch_size"]),

@@ -51,6 +51,7 @@ class SimResult:
     layer_latency_ns: int
     model_latency_ns: int
     model_throughput: float  # tokens/s
+    throughput_per_GPU: float  # tokens/s/GPU
 
     kv_cache_total_size_GB: float  # Total KV cache size across all layers.
 
@@ -72,6 +73,15 @@ def run_sim(
         raise ValueError(
             f"batch_size must be > 0, got {inference_config.batch_size}"
         )
+
+    num_ranks = inference_config.parallel_config.num_ranks
+    if not isinstance(num_ranks, int):
+        raise TypeError(
+            "inference_config.parallel_config.num_ranks must be an int, "
+            f"got {type(num_ranks).__name__}"
+        )
+    if num_ranks <= 0:
+        raise ValueError(f"num_ranks must be > 0, got {num_ranks}")
 
     if not hasattr(model_config, "num_hidden_layers"):
         raise ValueError("model_config.num_hidden_layers must be set")
@@ -111,12 +121,14 @@ def run_sim(
         kv_cache_state.total_kv_cache_size_per_layer * num_hidden_layers
     )
     model_throughput = inference_config.batch_size * 1e9 / model_latency_ns
+    throughput_per_gpu = model_throughput / num_ranks
     kv_cache_total_size_gb = total_kv_cache_bytes / (1024 ** 3)
 
     return SimResult(
         layer_latency_ns=layer_latency_ns,
         model_latency_ns=model_latency_ns,
         model_throughput=model_throughput,
+        throughput_per_GPU=throughput_per_gpu,
         kv_cache_total_size_GB=kv_cache_total_size_gb,
     )
 

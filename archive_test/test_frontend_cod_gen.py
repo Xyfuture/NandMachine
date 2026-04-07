@@ -30,6 +30,7 @@ def _trace_graph_module(model: torch.nn.Module) -> GraphModule:
 
 def _build_graph_meta(
     parallel_config: ParallelConfig | None = None,
+    batch_size: int = 2,
 ) -> NxGraphMeta:
     return NxGraphMeta(
         nand_config=NandConfig(
@@ -45,7 +46,7 @@ def _build_graph_meta(
         ),
         model_config=ModelConfigBase(attention_type="gqa"),
         inference_config=InferenceConfig(
-            batch_size=2,
+            batch_size=batch_size,
             input_sequence_length=8,
             output_sequence_length=4,
             weight_bits=16,
@@ -206,6 +207,16 @@ def test_nx_graph_meta_with_batch_size_returns_overridden_copy():
 
     assert updated_graph_meta is not graph_meta
     assert updated_graph_meta.batch_size == 7
+    assert graph_meta.batch_size == 2
+
+
+def test_nx_graph_meta_uses_local_batch_for_multi_rank_parallelism():
+    graph_meta = _build_graph_meta(
+        ParallelConfig(num_ranks=4),
+        batch_size=8,
+    )
+
+    assert graph_meta.global_batch_size == 8
     assert graph_meta.batch_size == 2
 
 

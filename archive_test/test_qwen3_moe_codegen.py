@@ -123,9 +123,9 @@ def test_fused_moe_codegen_clamps_expert_batch_size_to_one():
     assert any(op.dim == (1, 16, 8) for op in matmul_ops)
 
 
-def test_fused_moe_codegen_keeps_global_batch_for_all_to_all_and_local_expert_count():
+def test_fused_moe_codegen_uses_local_batch_for_all_to_all_and_expert_shapes():
     graph_meta = _build_graph_meta(
-        batch_size=5,
+        batch_size=6,
         parallel_config=MoEParallelConfig(
             num_ranks=2,
             attn_dp_size=2,
@@ -151,15 +151,15 @@ def test_fused_moe_codegen_keeps_global_batch_for_all_to_all_and_local_expert_co
 
     assert len(all_to_all_ops) == 2
     assert all(op.num_gpus == 2 for op in all_to_all_ops)
-    assert all(op.data_size == 160 for op in all_to_all_ops)
+    assert all(op.data_size == 96 for op in all_to_all_ops)
     assert len(module.experts) == 2
     assert len(silu_ops) == 2
-    assert all(op.vector_shape == [3, 32] for op in silu_ops)
+    assert all(op.vector_shape == [2, 32] for op in silu_ops)
 
 
 def test_fused_moe_codegen_uses_ffn_tp_size_for_expert_ops():
     graph_meta = _build_graph_meta(
-        batch_size=5,
+        batch_size=12,
         parallel_config=MoEParallelConfig(
             num_ranks=4,
             attn_dp_size=4,
@@ -184,14 +184,14 @@ def test_fused_moe_codegen_uses_ffn_tp_size_for_expert_ops():
 
     assert len(all_to_all_ops) == 2
     assert all(op.num_gpus == 4 for op in all_to_all_ops)
-    assert all(op.data_size == 80 for op in all_to_all_ops)
+    assert all(op.data_size == 48 for op in all_to_all_ops)
     assert len(module.experts) == 2
     assert any(
-        op.vector_op_type == "silu_mul" and op.vector_shape == [3, 16]
+        op.vector_op_type == "silu_mul" and op.vector_shape == [2, 16]
         for op in vector_ops
     )
-    assert any(op.dim == (3, 16, 32) for op in matmul_ops)
-    assert any(op.dim == (3, 16, 16) for op in matmul_ops)
+    assert any(op.dim == (2, 16, 32) for op in matmul_ops)
+    assert any(op.dim == (2, 16, 16) for op in matmul_ops)
 
 
 def test_moe_parallel_config_rejects_invalid_world_size():
