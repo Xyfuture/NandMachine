@@ -21,7 +21,10 @@ from nandmachine.commands.macro import (
 )
 from nandmachine.config.config import NandConfig
 from nandmachine.config.hardware_config import Device, device_dict, get_device_or_raise
-from nandmachine.config.interconnect_config import get_interconnect_for_device_or_raise
+from nandmachine.config.interconnect_config import (
+    TopologyType,
+    get_interconnect_for_device_or_raise,
+)
 from nandmachine.simulator.hardware.nand import NandController
 from nandmachine.simulator.hardware.utils import DepSlot
 from nandmachine.simulator.software.communication_primitives_of_dense import (
@@ -573,6 +576,7 @@ class TransferEngine(SimModule):
         self,
         *,
         device_name: str = "A100_80GB",
+        interconnect_topology: TopologyType = TopologyType.FC,
         compile_mode: str = "heuristic-GPU",
         tracer: Optional[PerfettoTracer] = None,
         trace_track: Optional[TrackInfo] = None,
@@ -583,6 +587,7 @@ class TransferEngine(SimModule):
             raise ValueError(f"Unsupported device_name: {device_name}")
 
         self.device_name = device_name
+        self.interconnect_topology = interconnect_topology
         self.compile_mode = compile_mode
         self.device: Device = device_dict[device_name]
         self.tracer = tracer
@@ -631,6 +636,7 @@ class TransferEngine(SimModule):
         interconnect = get_interconnect_for_device_or_raise(
             device_name=self.device_name,
             device_count=macro_op.num_ranks,
+            topology=self.interconnect_topology,
         )
 
         word_size = self._bytes_per_value(macro_op.weight_bits)
@@ -714,6 +720,7 @@ class xPU(SimModule):
         nand_config: NandConfig,
         hbm_bandwidth_bytes_per_sec: float,
         device_name: str = "A100_80GB",
+        interconnect_topology: TopologyType = TopologyType.FC,
         compile_mode: str = "heuristic-GPU",
         enable_trace: bool = False,
     ):
@@ -722,6 +729,7 @@ class xPU(SimModule):
         self.nand_config:NandConfig = nand_config
         self.hbm_bandwidth_bytes_per_sec = hbm_bandwidth_bytes_per_sec
         self.device_name = device_name
+        self.interconnect_topology = interconnect_topology
         self.compile_mode = compile_mode
         self.enable_trace = enable_trace
 
@@ -754,6 +762,7 @@ class xPU(SimModule):
         )
         self.transfer_engine = TransferEngine(
             device_name=device_name,
+            interconnect_topology=interconnect_topology,
             compile_mode=compile_mode,
             tracer=self.tracer,
             trace_track=self.transfer_trace_track,

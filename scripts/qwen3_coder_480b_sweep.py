@@ -36,6 +36,7 @@ from nandmachine.config.hbm_hbf_architecture import (
 )
 from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.config.inference_config import InferenceConfig, MoEParallelConfig
+from nandmachine.config.interconnect_config import TopologyType
 from nandmachine.config.model_config import Qwen3MoEModelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta, NxTracer
 from nandmachine.frontend.core.passes.cod_gen import CodeGenPass
@@ -62,6 +63,13 @@ def build_trace_root(run_tag: str) -> Path:
 
 def build_summary_csv_path(run_tag: str) -> Path:
     return TRACE_ROOT / f"{SWEEP_NAME}_summary_{run_tag}.csv"
+
+
+def resolve_interconnect_topology_or_raise(topology_name: str) -> TopologyType:
+    try:
+        return TopologyType[topology_name]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported interconnect topology: {topology_name}") from exc
 
 
 BASE_NAND_CONFIG = {
@@ -588,6 +596,7 @@ def run_macro_ops_with_trace(
     *,
     trace_path: Path,
     device_name: str,
+    interconnect_topology: TopologyType,
     compile_mode: str,
     hbm_bandwidth_GBps: float,
 ) -> dict[str, object]:
@@ -598,6 +607,7 @@ def run_macro_ops_with_trace(
         nand_config,
         hbm_bandwidth_bytes_per_sec=hbm_bandwidth_GBps * 10**9,
         device_name=device_name,
+        interconnect_topology=interconnect_topology,
         compile_mode=compile_mode,
         enable_trace=True,
     )
@@ -702,6 +712,9 @@ def build_result_row(
         macro_op_list,
         trace_path=trace_path,
         device_name=hardware_spec.device_name,
+        interconnect_topology=resolve_interconnect_topology_or_raise(
+            INTERCONNECT_TOPOLOGY
+        ),
         compile_mode=COMPILE_MODE,
         hbm_bandwidth_GBps=runtime_spec.sim_hbm_bandwidth_GBps,
     )

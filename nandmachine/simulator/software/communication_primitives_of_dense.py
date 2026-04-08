@@ -106,14 +106,38 @@ class AllReduceSimulation(CommunicationPrimitive):
             link_latency + effective_bytes_per_peer / edge_bandwidth_per_direction
         )
 
+    def _ring_latency(
+        self,
+        link_bandwidth_per_direction: float,
+        link_latency: float,
+        header_size: float,
+        max_payload_size: float,
+        link_count_per_device: float,
+        bytes_per_hop: float,
+        imbalance_factor: float,
+    ) -> float:
+        if bytes_per_hop <= 0:
+            return 0.0
+
+        effective_bytes_per_hop = (
+            header_size
+            + ceil(bytes_per_hop / max_payload_size) * header_size
+            + bytes_per_hop
+        )
+        edge_bandwidth_per_direction = (
+            link_bandwidth_per_direction * link_count_per_device
+        )
+        per_hop_latency = (
+            link_latency + effective_bytes_per_hop / edge_bandwidth_per_direction
+        )
+        return imbalance_factor * per_hop_latency * (2 * (self.num_gpus - 1))
+
     def simulate(self, interconnect_module: InterConnectModule) -> float:
         if interconnect_module.device_count != self.num_gpus:
             raise ValueError(
                 "interconnect_module.device_count must equal num_gpus, got "
                 f"{interconnect_module.device_count} vs {self.num_gpus}"
             )
-        if interconnect_module.topology != TopologyType.FC:
-            raise NotImplementedError("Dense all-reduce supports FC topology only.")
         if self.num_gpus <= 1 or self.data_size == 0:
             self.latency = 0.0
             return self.latency
@@ -131,105 +155,127 @@ class AllReduceSimulation(CommunicationPrimitive):
         # tensor owned by one rank before the all-reduce. A single
         # reduce-scatter or all-gather phase sends (N-1)/N of that tensor.
         full_local_tensor_bytes = self.data_size
-        phase_bytes_per_device = (
-            full_local_tensor_bytes * (self.num_gpus - 1) / self.num_gpus
-        )
+        if interconnect_module.topology == TopologyType.FC:
+            phase_bytes_per_device = (
+                full_local_tensor_bytes * (self.num_gpus - 1) / self.num_gpus
+            )
 
-        if self.num_gpus <= 8:
-            reduce_scatter_latency = self._single_layer_collective_phase_latency(
-                participant_count=self.num_gpus,
+            if self.num_gpus <= 8:
+                reduce_scatter_latency = self._single_layer_collective_phase_latency(
+                    participant_count=self.num_gpus,
+                    link_bandwidth_per_direction=link_bandwidth_per_direction,
+                    link_latency=link_latency,
+                    header_size=header_size,
+                    max_payload_size=max_payload_size,
+                    link_count_per_device=link_count_per_device,
+                    bytes_per_device=phase_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor,
+                )
+                allgather_latency = self._single_layer_collective_phase_latency(
+                    participant_count=self.num_gpus,
+                    link_bandwidth_per_direction=link_bandwidth_per_direction,
+                    link_latency=link_latency,
+                    header_size=header_size,
+                    max_payload_size=max_payload_size,
+                    link_count_per_device=link_count_per_device,
+                    bytes_per_device=phase_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor,
+                )
+            else:
+                gpus_per_node = int(self.allreduce_params["gpus_per_node"])
+                if gpus_per_node <= 1:
+                    raise ValueError("gpus_per_node must be > 1 for hierarchical all-reduce.")
+                if self.num_gpus % gpus_per_node != 0:
+                    raise ValueError(
+                        "For num_gpus > 8, num_gpus must be divisible by gpus_per_node."
+                    )
+                node_count = self.num_gpus // gpus_per_node
+
+                intra_share = (gpus_per_node - 1) / (self.num_gpus - 1)
+                inter_share = (self.num_gpus - gpus_per_node) / (self.num_gpus - 1)
+                intra_bytes_per_device = phase_bytes_per_device * intra_share
+                inter_bytes_per_device = phase_bytes_per_device * inter_share
+
+                reduce_scatter_intra_latency = self._single_layer_collective_phase_latency(
+                    participant_count=gpus_per_node,
+                    link_bandwidth_per_direction=link_bandwidth_per_direction,
+                    link_latency=link_latency,
+                    header_size=header_size,
+                    max_payload_size=max_payload_size,
+                    link_count_per_device=link_count_per_device,
+                    bytes_per_device=intra_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor,
+                )
+                reduce_scatter_inter_latency = self._single_layer_collective_phase_latency(
+                    participant_count=node_count,
+                    link_bandwidth_per_direction=self.allreduce_params[
+                        "inter_node_bandwidth_per_direction"
+                    ],
+                    link_latency=self.allreduce_params["inter_node_latency"],
+                    header_size=self.allreduce_params["inter_node_header_size"],
+                    max_payload_size=self.allreduce_params["inter_node_max_payload_size"],
+                    link_count_per_device=self.allreduce_params[
+                        "inter_node_link_count_per_device"
+                    ],
+                    bytes_per_device=inter_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor
+                    * self.allreduce_params["inter_node_oversubscription_factor"],
+                )
+                allgather_intra_latency = self._single_layer_collective_phase_latency(
+                    participant_count=gpus_per_node,
+                    link_bandwidth_per_direction=link_bandwidth_per_direction,
+                    link_latency=link_latency,
+                    header_size=header_size,
+                    max_payload_size=max_payload_size,
+                    link_count_per_device=link_count_per_device,
+                    bytes_per_device=intra_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor,
+                )
+                allgather_inter_latency = self._single_layer_collective_phase_latency(
+                    participant_count=node_count,
+                    link_bandwidth_per_direction=self.allreduce_params[
+                        "inter_node_bandwidth_per_direction"
+                    ],
+                    link_latency=self.allreduce_params["inter_node_latency"],
+                    header_size=self.allreduce_params["inter_node_header_size"],
+                    max_payload_size=self.allreduce_params["inter_node_max_payload_size"],
+                    link_count_per_device=self.allreduce_params[
+                        "inter_node_link_count_per_device"
+                    ],
+                    bytes_per_device=inter_bytes_per_device,
+                    imbalance_factor=load_imbalance_factor
+                    * self.allreduce_params["inter_node_oversubscription_factor"],
+                )
+
+                reduce_scatter_latency = max(
+                    reduce_scatter_intra_latency, reduce_scatter_inter_latency
+                )
+                allgather_latency = max(allgather_intra_latency, allgather_inter_latency)
+
+            internal_copy_bytes = self.allreduce_params["internal_copy_multiplier"] * (
+                2 * phase_bytes_per_device
+            )
+        elif interconnect_module.topology == TopologyType.RING:
+            bytes_per_hop = full_local_tensor_bytes / self.num_gpus
+            reduce_scatter_latency = 0.0
+            allgather_latency = self._ring_latency(
                 link_bandwidth_per_direction=link_bandwidth_per_direction,
                 link_latency=link_latency,
                 header_size=header_size,
                 max_payload_size=max_payload_size,
                 link_count_per_device=link_count_per_device,
-                bytes_per_device=phase_bytes_per_device,
+                bytes_per_hop=bytes_per_hop,
                 imbalance_factor=load_imbalance_factor,
             )
-            allgather_latency = self._single_layer_collective_phase_latency(
-                participant_count=self.num_gpus,
-                link_bandwidth_per_direction=link_bandwidth_per_direction,
-                link_latency=link_latency,
-                header_size=header_size,
-                max_payload_size=max_payload_size,
-                link_count_per_device=link_count_per_device,
-                bytes_per_device=phase_bytes_per_device,
-                imbalance_factor=load_imbalance_factor,
+            internal_copy_bytes = (
+                self.allreduce_params["internal_copy_multiplier"]
+                * full_local_tensor_bytes
             )
         else:
-            gpus_per_node = int(self.allreduce_params["gpus_per_node"])
-            if gpus_per_node <= 1:
-                raise ValueError("gpus_per_node must be > 1 for hierarchical all-reduce.")
-            if self.num_gpus % gpus_per_node != 0:
-                raise ValueError(
-                    "For num_gpus > 8, num_gpus must be divisible by gpus_per_node."
-                )
-            node_count = self.num_gpus // gpus_per_node
-
-            intra_share = (gpus_per_node - 1) / (self.num_gpus - 1)
-            inter_share = (self.num_gpus - gpus_per_node) / (self.num_gpus - 1)
-            intra_bytes_per_device = phase_bytes_per_device * intra_share
-            inter_bytes_per_device = phase_bytes_per_device * inter_share
-
-            reduce_scatter_intra_latency = self._single_layer_collective_phase_latency(
-                participant_count=gpus_per_node,
-                link_bandwidth_per_direction=link_bandwidth_per_direction,
-                link_latency=link_latency,
-                header_size=header_size,
-                max_payload_size=max_payload_size,
-                link_count_per_device=link_count_per_device,
-                bytes_per_device=intra_bytes_per_device,
-                imbalance_factor=load_imbalance_factor,
-            )
-            reduce_scatter_inter_latency = self._single_layer_collective_phase_latency(
-                participant_count=node_count,
-                link_bandwidth_per_direction=self.allreduce_params[
-                    "inter_node_bandwidth_per_direction"
-                ],
-                link_latency=self.allreduce_params["inter_node_latency"],
-                header_size=self.allreduce_params["inter_node_header_size"],
-                max_payload_size=self.allreduce_params["inter_node_max_payload_size"],
-                link_count_per_device=self.allreduce_params[
-                    "inter_node_link_count_per_device"
-                ],
-                bytes_per_device=inter_bytes_per_device,
-                imbalance_factor=load_imbalance_factor
-                * self.allreduce_params["inter_node_oversubscription_factor"],
-            )
-            allgather_intra_latency = self._single_layer_collective_phase_latency(
-                participant_count=gpus_per_node,
-                link_bandwidth_per_direction=link_bandwidth_per_direction,
-                link_latency=link_latency,
-                header_size=header_size,
-                max_payload_size=max_payload_size,
-                link_count_per_device=link_count_per_device,
-                bytes_per_device=intra_bytes_per_device,
-                imbalance_factor=load_imbalance_factor,
-            )
-            allgather_inter_latency = self._single_layer_collective_phase_latency(
-                participant_count=node_count,
-                link_bandwidth_per_direction=self.allreduce_params[
-                    "inter_node_bandwidth_per_direction"
-                ],
-                link_latency=self.allreduce_params["inter_node_latency"],
-                header_size=self.allreduce_params["inter_node_header_size"],
-                max_payload_size=self.allreduce_params["inter_node_max_payload_size"],
-                link_count_per_device=self.allreduce_params[
-                    "inter_node_link_count_per_device"
-                ],
-                bytes_per_device=inter_bytes_per_device,
-                imbalance_factor=load_imbalance_factor
-                * self.allreduce_params["inter_node_oversubscription_factor"],
+            raise NotImplementedError(
+                f"Dense all-reduce does not support topology={interconnect_module.topology}"
             )
 
-            reduce_scatter_latency = max(
-                reduce_scatter_intra_latency, reduce_scatter_inter_latency
-            )
-            allgather_latency = max(allgather_intra_latency, allgather_inter_latency)
-
-        internal_copy_bytes = self.allreduce_params["internal_copy_multiplier"] * (
-            2 * phase_bytes_per_device
-        )
         internal_latency = (
             internal_copy_bytes
             / interconnect_module.internal_link_bandwidth_per_direction
