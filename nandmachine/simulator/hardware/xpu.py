@@ -281,6 +281,13 @@ class ComputeEngine(SimModule):
 
 
     def process(self):
+        # Count flash attention ops once so the simplified pipeline rule can
+        # identify whether the last flash op must keep the serial softmax tail.
+        flash_op_count = sum(
+            1 for macro_op_slot in self.command_queue if isinstance(macro_op_slot.payload, FlashAttnOp)
+        )
+        flash_op_index = 0
+
         # 做好相关的同步 
         for macro_op_slot in self.command_queue:
             for input_slot in macro_op_slot.input_slots:
@@ -288,7 +295,21 @@ class ComputeEngine(SimModule):
                     SimModule.wait(input_slot.finish_event)
             
             start_cycle = _get_current_sim_cycle()
-            execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
+            if isinstance(macro_op_slot.payload, FlashAttnOp):
+                qk_bmm_time_ns, softmax_time_ns, sv_bmm_time_ns = (
+                    self._estimate_flashattn_component_times_ns(macro_op_slot.payload)
+                )
+                is_last_flash_op = flash_op_index == flash_op_count - 1
+
+                # Pair every flash op with the next one and hide softmax behind
+                # the longer SV stage. Only the last tail op keeps serial softmax.
+                if flash_op_count % 2 == 1 and is_last_flash_op:
+                    execute_time_ns = qk_bmm_time_ns + softmax_time_ns + sv_bmm_time_ns
+                else:
+                    execute_time_ns = qk_bmm_time_ns + max(softmax_time_ns, sv_bmm_time_ns)
+                flash_op_index += 1
+            else:
+                execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
             wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
             SimModule.wait_time(SimTime(wait_time_ns))
             end_cycle = _get_current_sim_cycle()
@@ -445,6 +466,52 @@ class ComputeEngine(SimModule):
             )
         return weight_bits // 8
 
+    def _estimate_flashattn_component_times_ns(
+        self, macro_op: FlashAttnOp
+    ) -> tuple[int, int, int]:
+        self._validate_flashattn_shapes(macro_op)
+
+        qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
+            dim=macro_op.qk_bmm_input_shape,
+            matmul_type="QK",
+            weight_bits=macro_op.weight_bits,
+        )
+        qk_bmm_time_ns = qk_bmm_sim.compile_and_simulate(
+            pcb_module=self.device,
+            nand_config=self.config,
+            hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
+            compile_mode=self.compile_mode,
+            return_unit="time_ns",
+        )
+
+        softmax_sim = Softmax_Simulation(
+            dim=macro_op.softmax_input_shape,
+            weight_bits=macro_op.weight_bits,
+        )
+        softmax_time_ns = softmax_sim.compile_and_simulate(
+            pcb_module=self.device,
+            compile_mode=self.compile_mode,
+            return_unit="time_ns",
+        )
+        sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
+            dim=macro_op.sv_bmm_input_shape,
+            matmul_type="SV",
+            weight_bits=macro_op.weight_bits,
+        )
+        sv_bmm_time_ns = sv_bmm_sim.compile_and_simulate(
+            pcb_module=self.device,
+            nand_config=self.config,
+            hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
+            compile_mode=self.compile_mode,
+            return_unit="time_ns",
+        )
+
+        return (
+            _normalize_time_ns(qk_bmm_time_ns, "qk_bmm_time_ns"),
+            _normalize_time_ns(softmax_time_ns, "softmax_time_ns"),
+            _normalize_time_ns(sv_bmm_time_ns, "sv_bmm_time_ns"),
+        )
+
     def execute_macro_op(self,macro_op:MacroOp)->float:
         if isinstance(macro_op, MatMulOp):
             matmul_sim = MatMul_Simulation.get_instance(
@@ -461,41 +528,8 @@ class ComputeEngine(SimModule):
             return _normalize_time_ns(matmul_time_ns, "matmul_time_ns")
 
         if isinstance(macro_op, FlashAttnOp):
-            self._validate_flashattn_shapes(macro_op)
-
-            qk_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
-                dim=macro_op.qk_bmm_input_shape,
-                matmul_type="QK",
-                weight_bits=macro_op.weight_bits,
-            )
-            qk_bmm_time_ns = qk_bmm_sim.compile_and_simulate(
-                pcb_module=self.device,
-                nand_config=self.config,
-                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
-                compile_mode=self.compile_mode,
-                return_unit="time_ns",
-            )
-
-            softmax_sim = Softmax_Simulation(
-                dim=macro_op.softmax_input_shape,
-                weight_bits=macro_op.weight_bits,
-            )
-            softmax_time_ns = softmax_sim.compile_and_simulate(
-                pcb_module=self.device,
-                compile_mode=self.compile_mode,
-                return_unit="time_ns",
-            )
-            sv_bmm_sim = FlashAttn_BatchedMatMul_Simulation.get_instance(
-                dim=macro_op.sv_bmm_input_shape,
-                matmul_type="SV",
-                weight_bits=macro_op.weight_bits,
-            )
-            sv_bmm_time_ns = sv_bmm_sim.compile_and_simulate(
-                pcb_module=self.device,
-                nand_config=self.config,
-                hbm_bandwidth_bytes_per_sec=self.hbm_bandwidth_bytes_per_sec,
-                compile_mode=self.compile_mode,
-                return_unit="time_ns",
+            qk_bmm_time_ns, softmax_time_ns, sv_bmm_time_ns = (
+                self._estimate_flashattn_component_times_ns(macro_op)
             )
             flashattn_time_ns = qk_bmm_time_ns + softmax_time_ns + sv_bmm_time_ns
             return _normalize_time_ns(flashattn_time_ns, "flashattn_time_ns")
