@@ -4,12 +4,11 @@ import pytest
 import scripts.qwen3_moe_sweep as sweep_module
 from scripts.qwen3_moe_sweep import (
     CASE_LIMIT_ENV_VAR,
-    CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS,
     CSV_FIELDNAMES,
     DEFAULT_MAX_WORKERS_CPU_DIVISOR,
-    HBM_ONLY_BATCH_SIZES_BY_RANKS,
     HARDWARE_SPECS,
     MAX_WORKERS_ENV_VAR,
+    SEQUENCE_CASE_CONFIGS,
     SweepCase,
     build_nand_config,
     build_runtime_spec,
@@ -20,22 +19,106 @@ from scripts.qwen3_moe_sweep import (
 )
 
 
+def _count_hbm_cases() -> int:
+    return sum(
+        len(batch_sizes)
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS
+        for batch_sizes in (sequence_case_config.hbm_batch_sizes_by_ranks or {}).values()
+    )
+
+
+def _count_collective_cases(mode: str) -> int:
+    if mode == "csi":
+        attr_name = "csi_batch_sizes_by_ranks_by_slo_ms"
+    elif mode == "cli":
+        attr_name = "cli_batch_sizes_by_ranks_by_slo_ms"
+    else:
+        raise AssertionError(f"Unsupported mode: {mode}")
+
+    return sum(
+        len(batch_sizes)
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS
+        for batch_sizes_by_ranks in (getattr(sequence_case_config, attr_name) or {}).values()
+        for batch_sizes in batch_sizes_by_ranks.values()
+    )
+
+
+def _configured_sequence_pairs() -> set[tuple[int, int]]:
+    return {
+        (sequence_case_config.input_sequence_length, sequence_case_config.output_sequence_length)
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS
+        if sequence_case_config.hbm_batch_sizes_by_ranks
+        or sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms
+        or sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms
+    }
+
+
 def test_qwen3_moe_sweep_builds_expected_case_count() -> None:
     cases = build_sweep_cases()
 
-    assert len(cases) == 36
-    assert sum(1 for case in cases if case.num_ranks == 4) == 12
-    assert sum(1 for case in cases if case.num_ranks == 8) == 12
-    assert sum(1 for case in cases if case.num_ranks == 16) == 12
-    assert all(case.hardware_type != "H200-HBF-CLI" for case in cases)
+    assert {
+        (sequence_case_config.input_sequence_length, sequence_case_config.output_sequence_length)
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS
+    } == {
+        (9400, 600),
+        (8000, 1000),
+        (20000, 1000),
+    }
+    assert {(case.input_sequence_length, case.output_sequence_length) for case in cases} == _configured_sequence_pairs()
+    assert len(cases) == _count_hbm_cases() + _count_collective_cases("csi") + _count_collective_cases("cli")
+    assert sum(1 for case in cases if case.hardware_type == "H200-HBM") == _count_hbm_cases()
+    assert sum(1 for case in cases if case.hardware_type == "H200-HBF-CSI") == _count_collective_cases("csi")
+    assert sum(1 for case in cases if case.hardware_type == "H200-HBF-CLI") == _count_collective_cases("cli")
 
 
 def test_qwen3_moe_sweep_uses_expected_batch_profiles_by_mode_and_slo() -> None:
+    expected_hbm = {
+        4: (48, 32, 16, 8),
+        8: (360, 256, 128, 64),
+        16: (992, 512, 256, 128),
+    }
+    expected_csi_50 = {
+        4: (272, 256, 128, 64),
+        8: (800, 512, 256, 128),
+        16: (1872, 1024, 512, 256),
+    }
+    expected_csi_100 = {
+        4: (804, 512, 256, 128),
+        8: (1872, 1024, 512, 256),
+        16: (4016, 2048, 1024, 512),
+    }
+    expected_cli_50 = {
+        4: (180, 128, 64, 32),
+        8: (624, 512, 256, 128),
+        16: (1520, 1024, 512, 256),
+    }
+    expected_cli_100 = {
+        4: (628, 512, 256, 128),
+        8: (1520, 1024, 512, 256),
+        16: (3296, 2048, 1024, 512),
+    }
+
     cases = build_sweep_cases()
+    active_sequence_case_config = next(
+        sequence_case_config
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS
+        if sequence_case_config.hbm_batch_sizes_by_ranks
+        or sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms
+        or sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms
+    )
+    input_sequence_length = active_sequence_case_config.input_sequence_length
+    output_sequence_length = active_sequence_case_config.output_sequence_length
 
     hbm_batches_by_rank = {
-        rank: tuple(case.batch_size for case in cases if case.hardware_type == "H200-HBM" and case.num_ranks == rank)
-        for rank in HBM_ONLY_BATCH_SIZES_BY_RANKS
+        rank: tuple(
+            case.batch_size
+            for case in cases
+            if case.hardware_type == "H200-HBM"
+            and case.num_ranks == rank
+            and case.input_sequence_length == input_sequence_length
+            and case.output_sequence_length == output_sequence_length
+        )
+        for rank in (active_sequence_case_config.hbm_batch_sizes_by_ranks or {})
     }
     csi_100_batches_by_rank = {
         rank: tuple(
@@ -44,8 +127,12 @@ def test_qwen3_moe_sweep_uses_expected_batch_profiles_by_mode_and_slo() -> None:
             if case.hardware_type == "H200-HBF-CSI"
             and case.slo_ms == 100
             and case.num_ranks == rank
+            and case.input_sequence_length == input_sequence_length
+            and case.output_sequence_length == output_sequence_length
         )
-        for rank in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS[100]
+        for rank in (
+            active_sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms or {}
+        ).get(100, {})
     }
     csi_50_batches_by_rank = {
         rank: tuple(
@@ -54,13 +141,64 @@ def test_qwen3_moe_sweep_uses_expected_batch_profiles_by_mode_and_slo() -> None:
             if case.hardware_type == "H200-HBF-CSI"
             and case.slo_ms == 50
             and case.num_ranks == rank
+            and case.input_sequence_length == input_sequence_length
+            and case.output_sequence_length == output_sequence_length
         )
-        for rank in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS[50]
+        for rank in (
+            active_sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms or {}
+        ).get(50, {})
+    }
+    cli_100_batches_by_rank = {
+        rank: tuple(
+            case.batch_size
+            for case in cases
+            if case.hardware_type == "H200-HBF-CLI"
+            and case.slo_ms == 100
+            and case.num_ranks == rank
+            and case.input_sequence_length == input_sequence_length
+            and case.output_sequence_length == output_sequence_length
+        )
+        for rank in (
+            active_sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms or {}
+        ).get(100, {})
+    }
+    cli_50_batches_by_rank = {
+        rank: tuple(
+            case.batch_size
+            for case in cases
+            if case.hardware_type == "H200-HBF-CLI"
+            and case.slo_ms == 50
+            and case.num_ranks == rank
+            and case.input_sequence_length == input_sequence_length
+            and case.output_sequence_length == output_sequence_length
+        )
+        for rank in (
+            active_sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms or {}
+        ).get(50, {})
     }
 
-    assert hbm_batches_by_rank == HBM_ONLY_BATCH_SIZES_BY_RANKS
-    assert csi_100_batches_by_rank == CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS[100]
-    assert csi_50_batches_by_rank == CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS[50]
+    assert active_sequence_case_config.hbm_batch_sizes_by_ranks == expected_hbm
+    assert active_sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms == {
+        50: expected_csi_50,
+        100: expected_csi_100,
+    }
+    assert active_sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms == {
+        50: expected_cli_50,
+        100: expected_cli_100,
+    }
+    assert hbm_batches_by_rank == (active_sequence_case_config.hbm_batch_sizes_by_ranks or {})
+    assert csi_100_batches_by_rank == (
+        active_sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms or {}
+    ).get(100, {})
+    assert csi_50_batches_by_rank == (
+        active_sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms or {}
+    ).get(50, {})
+    assert cli_100_batches_by_rank == (
+        active_sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms or {}
+    ).get(100, {})
+    assert cli_50_batches_by_rank == (
+        active_sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms or {}
+    ).get(50, {})
 
 
 def test_qwen3_moe_sweep_csv_includes_explicit_script_parameters() -> None:
@@ -68,7 +206,7 @@ def test_qwen3_moe_sweep_csv_includes_explicit_script_parameters() -> None:
         "model_card_path",
         "compile_mode",
         "batch_size_semantics",
-        "capacity_rule",
+        "interconnect_topology",
         "case_limit",
         "selected_case_count",
         "total_case_count",
@@ -152,6 +290,7 @@ def test_resolve_max_workers_rejects_invalid_env_override(monkeypatch: pytest.Mo
 
 
 def test_qwen3_moe_sweep_trace_dir_includes_slo_segment() -> None:
+    run_tag = "20260409_0100"
     assert build_trace_dir(
         SweepCase(
             hardware_type="H200-HBM",
@@ -160,9 +299,11 @@ def test_qwen3_moe_sweep_trace_dir_includes_slo_segment() -> None:
             input_sequence_length=9400,
             output_sequence_length=600,
             slo_ms=None,
-        )
+        ),
+        run_tag,
     ) == (
         Path("trace/main")
+        / "qwen3_moe_sweep_20260409_0100"
         / "H200-HBM"
         / "ranks_8"
         / "slo_none"
@@ -178,9 +319,11 @@ def test_qwen3_moe_sweep_trace_dir_includes_slo_segment() -> None:
             input_sequence_length=9400,
             output_sequence_length=600,
             slo_ms=100,
-        )
+        ),
+        run_tag,
     ) == (
         Path("trace/main")
+        / "qwen3_moe_sweep_20260409_0100"
         / "H200-HBF-CSI"
         / "ranks_16"
         / "slo_100ms"
@@ -256,15 +399,19 @@ def test_run_sweep_uses_process_pool_with_resolved_worker_count(
             max_workers: int,
             selected_case_count: int,
             total_case_count: int,
+            run_tag: str,
         ) -> FakeFuture:
             submitted.append((case, max_workers))
-            return FakeFuture(fn(case, max_workers, selected_case_count, total_case_count))
+            return FakeFuture(
+                fn(case, max_workers, selected_case_count, total_case_count, run_tag)
+            )
 
     def fake_build_result_row(
         case: SweepCase,
         max_workers: int,
         selected_case_count: int,
         total_case_count: int,
+        run_tag: str,
     ) -> dict[str, object]:
         return {
             "hardware_type": case.hardware_type,
@@ -277,6 +424,7 @@ def test_run_sweep_uses_process_pool_with_resolved_worker_count(
             "selected_case_count": selected_case_count,
             "total_case_count": total_case_count,
             "max_workers": max_workers,
+            "trace_path": f"trace/main/qwen3_moe_sweep_{run_tag}/dummy.json",
         }
 
     monkeypatch.setattr(sweep_module, "build_sweep_cases", lambda: cases)
@@ -288,10 +436,10 @@ def test_run_sweep_uses_process_pool_with_resolved_worker_count(
     monkeypatch.setattr(
         sweep_module,
         "write_summary_csv",
-        lambda rows: summary_rows.extend(rows),
+        lambda rows, summary_csv_path: summary_rows.extend(rows),
     )
 
-    rows = sweep_module.run_sweep()
+    rows = sweep_module.run_sweep("20260409_0100")
 
     assert context_max_workers == [7]
     assert len(submitted) == len(cases)

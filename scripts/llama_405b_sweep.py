@@ -53,6 +53,7 @@ CONFIG_FILE_NAME = "config.json"
 COMPILE_MODE = "heuristic-GPU"
 MAX_WORKERS_ENV_VAR = "LLAMA_405B_SWEEP_MAX_WORKERS"
 CASE_LIMIT_ENV_VAR = "LLAMA_405B_SWEEP_CASE_LIMIT"
+INTERCONNECT_TOPOLOGY = "RING"
 
 
 def build_trace_root(run_tag: str) -> Path:
@@ -79,26 +80,6 @@ ACTIVATION_BITS = 16
 KV_CACHE_BITS = 16
 KV_BLOCK_SIZE_BYTES = 1024 * 256
 
-SEQUENCE_LENGTHS: tuple[tuple[int, int], ...] = (
-    (9400, 600),
-)
-HBM_ONLY_BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
-    8: (64, 32, 16, 8),
-    16: (288, 144, 64, 32),
-}
-CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS: dict[int, dict[int, tuple[int, ...]]] = {
-    50: {
-        4: (28, 16, 8, 4),
-        8: (224, 128, 64, 32),
-        16: (608, 256, 128, 64),
-    },
-    100: {
-        4: (224, 128, 64, 32),
-        8: (608, 256, 128, 64),
-        16: (1408, 512, 256, 128),
-    },
-}
-
 @dataclass(frozen=True)
 class HardwareSpec:
     hardware_type: str
@@ -122,6 +103,100 @@ class RuntimeSpec:
     sim_hbm_bandwidth_GBps: float
     derived_hbf_bandwidth_GBps: float
     normalized_architecture: dict[str, str | int]
+
+
+@dataclass(frozen=True)
+class SequenceCaseConfig:
+    input_sequence_length: int
+    output_sequence_length: int
+    hbm_batch_sizes_by_ranks: dict[int, tuple[int, ...]] | None
+    csi_batch_sizes_by_ranks_by_slo_ms: dict[int, dict[int, tuple[int, ...]]] | None
+    cli_batch_sizes_by_ranks_by_slo_ms: dict[int, dict[int, tuple[int, ...]]] | None
+
+
+# Model memory note:
+# - Weight footprint: 810 GiB
+# - Full-model KV cache per token: 516096 B = 504 KiB/token
+SEQUENCE_CASE_CONFIGS: tuple[SequenceCaseConfig, ...] = (
+    SequenceCaseConfig(
+        input_sequence_length=9400,
+        output_sequence_length=600,
+        hbm_batch_sizes_by_ranks={
+            8: (64, 32, 16, 8),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 66
+        },
+        csi_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                4: (28, 16, 8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 31
+                8: (224, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 230
+            },
+            100: {
+                4: (228, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 230
+                8: (624, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 630
+            },
+        },
+        cli_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                8: (160, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 164
+            },
+            100: {
+                4: (160, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 164
+                8: (496, 256, 128, 64),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 497
+            },
+        },
+    ),
+    SequenceCaseConfig(
+        input_sequence_length=8000,
+        output_sequence_length=1000,
+        hbm_batch_sizes_by_ranks={
+            8: (72, 64, 32, 16),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 73
+        },
+        csi_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                4: (32, 16, 8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 34
+                8: (248, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 256
+            },
+            100: {
+                4: (252, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 256
+                8: (696, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 700
+            },
+        },
+        cli_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                8: (176, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 182
+            },
+            100: {
+                4: (180, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 182
+                8: (544, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 552
+            },
+        },
+    ),
+    SequenceCaseConfig(
+        input_sequence_length=20000,
+        output_sequence_length=1000,
+        hbm_batch_sizes_by_ranks={
+            8: (24, 16, 8),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 31
+        },
+        csi_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                4: (12, 8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 14
+                8: (104, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 109
+            },
+            100: {
+                4: (108, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 109
+                8: (296, 256, 128, 64),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 300
+            },
+        },
+        cli_batch_sizes_by_ranks_by_slo_ms={
+            50: {
+                8: (72, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 78
+            },
+            100: {
+                4: (76, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 78
+                8: (232, 128, 64, 32),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 236
+            },
+        },
+    ),
+)
 
 
 def configure_runtime_thread_limits() -> None:
@@ -183,6 +258,24 @@ def resolve_max_workers(case_count: int) -> int:
     return min(configured_max_workers, case_count)
 
 
+def _resolve_batch_sizes_by_ranks_by_slo_or_none(
+    sequence_case_config: SequenceCaseConfig,
+    mode: str,
+) -> dict[int | None, dict[int, tuple[int, ...]]] | None:
+    if mode == "hbm_only":
+        if not sequence_case_config.hbm_batch_sizes_by_ranks:
+            return None
+        return {None: sequence_case_config.hbm_batch_sizes_by_ranks}
+
+    if mode == "csi":
+        return sequence_case_config.csi_batch_sizes_by_ranks_by_slo_ms
+
+    if mode == "cli":
+        return sequence_case_config.cli_batch_sizes_by_ranks_by_slo_ms
+
+    raise AssertionError(f"Unhandled memory_architecture mode: {mode}")
+
+
 HARDWARE_SPECS: tuple[HardwareSpec, ...] = (
     HardwareSpec(
         hardware_type="H200-HBM",
@@ -208,6 +301,7 @@ CSV_CASE_OVERVIEW_FIELDNAMES = [
     "hardware_type",
     "memory_architecture_mode",
     "memory_backend",
+    "interconnect_topology",
     "num_ranks",
     "slo_ms",
     "batch_size",
@@ -285,29 +379,24 @@ def build_sweep_cases() -> list[SweepCase]:
     cases: list[SweepCase] = []
     for hardware_spec in HARDWARE_SPECS:
         mode = str(hardware_spec.memory_architecture["mode"])
+        for sequence_case_config in SEQUENCE_CASE_CONFIGS:
+            batch_sizes_by_ranks_by_slo = _resolve_batch_sizes_by_ranks_by_slo_or_none(
+                sequence_case_config,
+                mode,
+            )
+            if not batch_sizes_by_ranks_by_slo:
+                continue
 
-        batch_sizes_by_ranks_by_slo: dict[int | None, dict[int, tuple[int, ...]]]
-        if mode == "hbm_only":
-            batch_sizes_by_ranks_by_slo = {None: HBM_ONLY_BATCH_SIZES_BY_RANKS}
-        elif mode in ("csi", "cli"):
-            batch_sizes_by_ranks_by_slo = {
-                slo_ms: batch_sizes_by_ranks
-                for slo_ms, batch_sizes_by_ranks in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS.items()
-            }
-        else:
-            raise AssertionError(f"Unhandled memory_architecture mode: {mode}")
-
-        for slo_ms, batch_sizes_by_ranks in batch_sizes_by_ranks_by_slo.items():
-            for num_ranks, batch_sizes in batch_sizes_by_ranks.items():
-                for input_sequence_length, output_sequence_length in SEQUENCE_LENGTHS:
+            for slo_ms, batch_sizes_by_ranks in batch_sizes_by_ranks_by_slo.items():
+                for num_ranks, batch_sizes in batch_sizes_by_ranks.items():
                     for batch_size in batch_sizes:
                         cases.append(
                             SweepCase(
                                 hardware_type=hardware_spec.hardware_type,
                                 num_ranks=num_ranks,
                                 batch_size=batch_size,
-                                input_sequence_length=input_sequence_length,
-                                output_sequence_length=output_sequence_length,
+                                input_sequence_length=sequence_case_config.input_sequence_length,
+                                output_sequence_length=sequence_case_config.output_sequence_length,
                                 slo_ms=slo_ms,
                             )
                         )
@@ -610,6 +699,7 @@ def build_result_row(
         "model_card_path": str(MODEL_CARD_PATH),
         "compile_mode": COMPILE_MODE,
         "batch_size_semantics": "global",
+        "interconnect_topology": INTERCONNECT_TOPOLOGY,
         "status": "ok",
         "error_type": None,
         "error_message": None,
@@ -694,24 +784,7 @@ def build_result_row(
                 "torch_num_interop_threads": TORCH_NUM_INTEROP_THREADS,
             },
             "base_nand_config": BASE_NAND_CONFIG,
-            "sequence_lengths": [
-                {
-                    "input_sequence_length": input_sequence_length,
-                    "output_sequence_length": output_sequence_length,
-                }
-                for input_sequence_length, output_sequence_length in SEQUENCE_LENGTHS
-            ],
-            "hbm_only_batch_sizes_by_ranks": {
-                str(num_ranks): list(batch_sizes)
-                for num_ranks, batch_sizes in HBM_ONLY_BATCH_SIZES_BY_RANKS.items()
-            },
-            "csi_batch_sizes_by_ranks_by_slo_ms": {
-                str(slo_ms): {
-                    str(num_ranks): list(batch_sizes)
-                    for num_ranks, batch_sizes in batch_sizes_by_ranks.items()
-                }
-                for slo_ms, batch_sizes_by_ranks in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS.items()
-            },
+            "sequence_case_configs": [asdict(sequence_case_config) for sequence_case_config in SEQUENCE_CASE_CONFIGS],
         },
         "model_config": asdict(model_config),
         "hardware_spec": asdict(hardware_spec),
@@ -758,6 +831,7 @@ def build_error_row(
         "model_card_path": str(MODEL_CARD_PATH),
         "compile_mode": COMPILE_MODE,
         "batch_size_semantics": "global",
+        "interconnect_topology": INTERCONNECT_TOPOLOGY,
         "status": "error",
         "error_type": type(exc).__name__,
         "error_message": str(exc),
