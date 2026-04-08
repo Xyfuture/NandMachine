@@ -35,23 +35,23 @@ from nandmachine.config.hbm_hbf_architecture import (
 )
 from nandmachine.config.hardware_config import get_device_or_raise
 from nandmachine.config.inference_config import InferenceConfig, MoEParallelConfig
-from nandmachine.config.model_config import Qwen3MoEModelConfig
+from nandmachine.config.model_config import DeepseekV3ModelConfig
 from nandmachine.frontend.core.graph.base import NxGraphMeta, NxTracer
 from nandmachine.frontend.core.passes.cod_gen import CodeGenPass
 from nandmachine.frontend.core.passes.normalize import NormalizePass
-from nandmachine.frontend.network.qwen3_moe import Qwen3MoEDecoderLayer
+from nandmachine.frontend.network.deepseek_v3 import DeepseekV3DecoderLayer
 from nandmachine.frontend.utlis import build_kv_cache_state
 from nandmachine.simulator.hardware.xpu import xPU
 
 
-MODEL_CARD_PATH = Path("model_cards/qwen3-moe-235B.json")
+MODEL_CARD_PATH = Path("model_cards/deepseek-v3.json")
 TRACE_ROOT = Path("trace/main")
-SUMMARY_CSV_PATH = TRACE_ROOT / "qwen3_moe_sweep_summary.csv"
+SUMMARY_CSV_PATH = TRACE_ROOT / "deepseek_v3_sweep_summary.csv"
 FULL_TRACE_FILE_NAME = "full_simulation.json"
 CONFIG_FILE_NAME = "config.json"
 COMPILE_MODE = "heuristic-GPU"
-MAX_WORKERS_ENV_VAR = "QWEN3_MOE_SWEEP_MAX_WORKERS"
-CASE_LIMIT_ENV_VAR = "QWEN3_MOE_SWEEP_CASE_LIMIT"
+MAX_WORKERS_ENV_VAR = "DEEPSEEK_V3_SWEEP_MAX_WORKERS"
+CASE_LIMIT_ENV_VAR = "DEEPSEEK_V3_SWEEP_CASE_LIMIT"
 
 BASE_NAND_CONFIG = {
     "num_channels": 6 * 8,
@@ -313,13 +313,34 @@ def get_hardware_spec_or_raise(hardware_type: str) -> HardwareSpec:
 def load_model_card_or_raise() -> dict[str, Any]:
     if not MODEL_CARD_PATH.exists():
         raise FileNotFoundError(f"Model card not found: {MODEL_CARD_PATH}")
-    model_card = json.loads(MODEL_CARD_PATH.read_text())
-    model_card.setdefault("attention_type", "gqa")
-    return model_card
+    return json.loads(MODEL_CARD_PATH.read_text())
 
 
-def build_raw_model_config(model_card: dict[str, Any]) -> object:
-    return type("Qwen3MoeSweepConfig", (), model_card)()
+def resolve_representative_layer_idx_or_raise(
+    model_card: dict[str, Any],
+    model_config: DeepseekV3ModelConfig,
+) -> int:
+    if "first_k_dense_replace" not in model_card:
+        raise KeyError("DeepseekV3 sweep requires first_k_dense_replace in model card")
+
+    representative_layer_idx = model_card["first_k_dense_replace"]
+    if not isinstance(representative_layer_idx, int):
+        raise TypeError(
+            "first_k_dense_replace must be an int, "
+            f"got {type(representative_layer_idx).__name__}"
+        )
+    if representative_layer_idx < 0:
+        raise ValueError(
+            "first_k_dense_replace must be >= 0, "
+            f"got {representative_layer_idx}"
+        )
+    if representative_layer_idx >= model_config.num_hidden_layers:
+        raise ValueError(
+            "first_k_dense_replace must be < num_hidden_layers, "
+            f"got first_k_dense_replace={representative_layer_idx}, "
+            f"num_hidden_layers={model_config.num_hidden_layers}"
+        )
+    return representative_layer_idx
 
 
 def build_parallel_config(num_ranks: int) -> MoEParallelConfig:
@@ -436,8 +457,8 @@ def build_inference_config(
 
 
 def build_macro_op_list(
-    raw_model_config: object,
-    model_config: Qwen3MoEModelConfig,
+    representative_layer_idx: int,
+    model_config: DeepseekV3ModelConfig,
     nand_config: NandConfig,
     inference_config: InferenceConfig,
     parallel_config: MoEParallelConfig,
@@ -451,7 +472,11 @@ def build_macro_op_list(
     )
 
     with torch.device("meta"):
-        model = Qwen3MoEDecoderLayer(raw_model_config, parallel_config)
+        model = DeepseekV3DecoderLayer(
+            layer_idx=representative_layer_idx,
+            config=model_config,
+            parallel_config=parallel_config,
+        )
         graph = NxTracer().trace(model)
         graph_module = GraphModule(model, graph)
 
@@ -546,8 +571,11 @@ def build_result_row(
         )
     hardware_spec = get_hardware_spec_or_raise(case.hardware_type)
     model_card = load_model_card_or_raise()
-    raw_model_config = build_raw_model_config(deepcopy(model_card))
-    model_config = Qwen3MoEModelConfig.from_config(raw_model_config)
+    model_config = DeepseekV3ModelConfig.from_dict(deepcopy(model_card))
+    representative_layer_idx = resolve_representative_layer_idx_or_raise(
+        model_card,
+        model_config,
+    )
 
     if not isinstance(model_config.num_hidden_layers, int):
         raise TypeError(
@@ -568,7 +596,7 @@ def build_result_row(
         hardware_spec.memory_backend,
     )
     macro_op_list = build_macro_op_list(
-        raw_model_config,
+        representative_layer_idx,
         model_config,
         nand_config,
         inference_config,
@@ -671,6 +699,7 @@ def build_result_row(
             "activation_bits": ACTIVATION_BITS,
             "kv_cache_bits": KV_CACHE_BITS,
             "kv_block_size_bytes": KV_BLOCK_SIZE_BYTES,
+            "representative_layer_idx": representative_layer_idx,
             "runtime_thread_env": dict(_SINGLE_THREAD_RUNTIME_ENV_DEFAULTS),
             "resolved_runtime_thread_env": {
                 env_name: os.environ[env_name]

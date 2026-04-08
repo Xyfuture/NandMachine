@@ -189,36 +189,53 @@ HARDWARE_SPECS: tuple[HardwareSpec, ...] = (
     ),
 )
 
-CSV_FIELDNAMES = [
+CSV_CASE_OVERVIEW_FIELDNAMES = [
     "hardware_type",
+    "memory_architecture_mode",
+    "memory_backend",
+    "num_ranks",
+    "slo_ms",
+    "batch_size",
+]
+CSV_CORE_OUTPUT_FIELDNAMES = [
+    "model_throughput_tokens_per_sec",
+    "throughput_per_GPU",
+    "layer_latency_ns",
+    "model_latency_ns",
+    "trace_path",
+]
+CSV_UNIQUE_RESULT_FIELDNAMES = [
+    "status",
+    "error_type",
+    "error_message",
+]
+CSV_CASE_DIFF_FIELDNAMES = [
+    "effective_hbm_stacks",
+    "effective_hbf_stacks",
+    "sim_hbm_bandwidth_GBps",
+    "derived_hbf_bandwidth_GBps",
+    "nand_num_channels",
+    "attn_dp_size",
+    "attn_tp_size",
+    "ffn_tp_size",
+    "ffn_ep_size",
+    "input_sequence_length",
+    "output_sequence_length",
+]
+CSV_OTHER_OUTPUT_FIELDNAMES = [
+    "macro_op_count",
+]
+CSV_COMMON_FIELDNAMES = [
     "device_name",
     "model_card_path",
     "compile_mode",
     "batch_size_semantics",
-    "capacity_rule",
-    "capacity_check",
-    "status",
-    "error_type",
-    "error_message",
     "case_limit",
     "selected_case_count",
     "total_case_count",
     "max_workers",
     "worker_count_source",
     "host_logical_cpu_count",
-    "memory_architecture_mode",
-    "effective_hbm_stacks",
-    "effective_hbf_stacks",
-    "memory_backend",
-    "num_ranks",
-    "attn_dp_size",
-    "attn_tp_size",
-    "ffn_tp_size",
-    "ffn_ep_size",
-    "slo_ms",
-    "batch_size",
-    "input_sequence_length",
-    "output_sequence_length",
     "weight_bits",
     "activation_bits",
     "kv_cache_bits",
@@ -230,7 +247,6 @@ CSV_FIELDNAMES = [
     "blis_num_threads",
     "torch_num_threads",
     "torch_num_interop_threads",
-    "nand_num_channels",
     "nand_num_plane",
     "nand_num_block",
     "nand_num_pages",
@@ -239,17 +255,14 @@ CSV_FIELDNAMES = [
     "nand_tErase",
     "nand_page_size_kb",
     "nand_sram_threshold_kb",
-    "sim_hbm_bandwidth_GBps",
-    "derived_hbf_bandwidth_GBps",
-    "macro_op_count",
-    "layer_latency_ns",
-    "model_latency_ns",
-    "model_throughput_tokens_per_sec",
-    "throughput_per_GPU",
-    "total_used_bytes",
-    "total_weight_bytes",
-    "total_kv_cache_bytes",
-    "trace_path",
+]
+CSV_FIELDNAMES = [
+    *CSV_CASE_OVERVIEW_FIELDNAMES,
+    *CSV_CORE_OUTPUT_FIELDNAMES,
+    *CSV_UNIQUE_RESULT_FIELDNAMES,
+    *CSV_CASE_DIFF_FIELDNAMES,
+    *CSV_OTHER_OUTPUT_FIELDNAMES,
+    *CSV_COMMON_FIELDNAMES,
 ]
 
 
@@ -581,8 +594,6 @@ def build_result_row(
         "model_card_path": str(MODEL_CARD_PATH),
         "compile_mode": COMPILE_MODE,
         "batch_size_semantics": "global",
-        "capacity_rule": "total_capacity_minus_total_weight",
-        "capacity_check": "skipped",
         "status": "ok",
         "error_type": None,
         "error_message": None,
@@ -632,9 +643,6 @@ def build_result_row(
         "model_latency_ns": model_latency_ns,
         "model_throughput_tokens_per_sec": model_throughput_tokens_per_sec,
         "throughput_per_GPU": throughput_per_gpu,
-        "total_used_bytes": None,
-        "total_weight_bytes": None,
-        "total_kv_cache_bytes": None,
         "trace_path": sim_result["trace_path"],
     }
 
@@ -647,8 +655,6 @@ def build_result_row(
             "config_file_name": CONFIG_FILE_NAME,
             "compile_mode": COMPILE_MODE,
             "batch_size_semantics": "global",
-            "capacity_rule": "total_capacity_minus_total_weight",
-            "capacity_check": "skipped",
             "case_limit": os.getenv(CASE_LIMIT_ENV_VAR),
             "case_limit_env_var": CASE_LIMIT_ENV_VAR,
             "selected_case_count": selected_case_count,
@@ -702,7 +708,6 @@ def build_result_row(
             "derived_hbf_bandwidth_GBps": runtime_spec.derived_hbf_bandwidth_GBps,
             "normalized_architecture": runtime_spec.normalized_architecture,
         },
-        "capacity_result": None,
         "simulation_result": {
             "layer_latency_ns": layer_latency_ns,
             "model_latency_ns": model_latency_ns,
@@ -737,8 +742,6 @@ def build_error_row(
         "model_card_path": str(MODEL_CARD_PATH),
         "compile_mode": COMPILE_MODE,
         "batch_size_semantics": "global",
-        "capacity_rule": "total_capacity_minus_total_weight",
-        "capacity_check": "skipped",
         "status": "error",
         "error_type": type(exc).__name__,
         "error_message": str(exc),
@@ -788,9 +791,6 @@ def build_error_row(
         "model_latency_ns": None,
         "model_throughput_tokens_per_sec": None,
         "throughput_per_GPU": None,
-        "total_used_bytes": None,
-        "total_weight_bytes": None,
-        "total_kv_cache_bytes": None,
         "trace_path": None,
     }
 
