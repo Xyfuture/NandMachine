@@ -6,6 +6,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -46,12 +47,21 @@ from nandmachine.simulator.hardware.xpu import xPU
 
 MODEL_CARD_PATH = Path("model_cards/qwen3-moe-235B.json")
 TRACE_ROOT = Path("trace/main")
-SUMMARY_CSV_PATH = TRACE_ROOT / "qwen3_moe_sweep_summary.csv"
+SWEEP_NAME = "qwen3_moe_sweep"
 FULL_TRACE_FILE_NAME = "full_simulation.json"
 CONFIG_FILE_NAME = "config.json"
 COMPILE_MODE = "heuristic-GPU"
 MAX_WORKERS_ENV_VAR = "QWEN3_MOE_SWEEP_MAX_WORKERS"
 CASE_LIMIT_ENV_VAR = "QWEN3_MOE_SWEEP_CASE_LIMIT"
+
+
+def build_trace_root(run_tag: str) -> Path:
+    return TRACE_ROOT / f"{SWEEP_NAME}_{run_tag}"
+
+
+def build_summary_csv_path(run_tag: str) -> Path:
+    return TRACE_ROOT / f"{SWEEP_NAME}_summary_{run_tag}.csv"
+
 
 BASE_NAND_CONFIG = {
     "num_channels": 6 * 8,
@@ -73,20 +83,20 @@ SEQUENCE_LENGTHS: tuple[tuple[int, int], ...] = (
     (9400, 600),
 )
 HBM_ONLY_BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
-    4: (4, 12, 24, 48),
-    8: (40, 80, 160, 320),
-    16: (128, 240, 480, 896),
+    4: (52, 24, 12, 8),
+    8: (352, 176, 80, 40),
+    16: (992, 512, 256, 128),
 }
 CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS: dict[int, dict[int, tuple[int, ...]]] = {
-    100: {
-        4: (1024, 512, 256, 128),
-        8: (2048, 1024, 512, 256),
-        16: (4096, 2048, 1024, 512),
-    },
     50: {
-        4: (512, 256, 128, 64),
-        8: (1024, 512, 256, 128),
-        16: (2048, 1024, 512, 256),
+        4: (272, 128, 64, 32),
+        8: (800, 400, 200, 128),
+        16: (1856, 1024, 512, 256),
+    },
+    100: {
+        4: (800, 400, 200, 128),
+        8: (1856, 1024, 512, 256),
+        16: (4000, 2048, 1024, 512),
     },
 }
 
@@ -508,10 +518,10 @@ def run_macro_ops_with_trace(
     }
 
 
-def build_trace_dir(case: SweepCase) -> Path:
+def build_trace_dir(case: SweepCase, run_tag: str) -> Path:
     slo_segment = "slo_none" if case.slo_ms is None else f"slo_{case.slo_ms}ms"
     return (
-        TRACE_ROOT
+        build_trace_root(run_tag)
         / case.hardware_type
         / f"ranks_{case.num_ranks}"
         / slo_segment
@@ -530,6 +540,7 @@ def build_result_row(
     max_workers: int,
     selected_case_count: int,
     total_case_count: int,
+    run_tag: str,
 ) -> dict[str, object]:
     if max_workers <= 0:
         raise ValueError(f"max_workers must be > 0, got {max_workers}")
@@ -545,6 +556,8 @@ def build_result_row(
             f"got selected_case_count={selected_case_count}, total_case_count={total_case_count}"
         )
     hardware_spec = get_hardware_spec_or_raise(case.hardware_type)
+    trace_root = build_trace_root(run_tag)
+    summary_csv_path = build_summary_csv_path(run_tag)
     model_card = load_model_card_or_raise()
     raw_model_config = build_raw_model_config(deepcopy(model_card))
     model_config = Qwen3MoEModelConfig.from_config(raw_model_config)
@@ -575,7 +588,7 @@ def build_result_row(
         parallel_config,
     )
 
-    trace_dir = build_trace_dir(case)
+    trace_dir = build_trace_dir(case, run_tag)
     trace_path = trace_dir / FULL_TRACE_FILE_NAME
     sim_result = run_macro_ops_with_trace(
         nand_config,
@@ -652,8 +665,8 @@ def build_result_row(
     config_payload = {
         "script_config": {
             "model_card_path": str(MODEL_CARD_PATH),
-            "trace_root": str(TRACE_ROOT),
-            "summary_csv_path": str(SUMMARY_CSV_PATH),
+            "trace_root": str(trace_root),
+            "summary_csv_path": str(summary_csv_path),
             "full_trace_file_name": FULL_TRACE_FILE_NAME,
             "config_file_name": CONFIG_FILE_NAME,
             "compile_mode": COMPILE_MODE,
@@ -731,16 +744,19 @@ def build_result_row(
     return row
 
 
-def write_summary_csv(rows: list[dict[str, object]]) -> None:
-    TRACE_ROOT.mkdir(parents=True, exist_ok=True)
-    with SUMMARY_CSV_PATH.open("w", newline="") as csv_file:
+def write_summary_csv(
+    rows: list[dict[str, object]],
+    summary_csv_path: Path,
+) -> None:
+    summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with summary_csv_path.open("w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
 
 
-def run_sweep() -> list[dict[str, object]]:
+def run_sweep(run_tag: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     all_cases = build_sweep_cases()
     if not all_cases:
@@ -759,6 +775,7 @@ def run_sweep() -> list[dict[str, object]]:
                 max_workers,
                 selected_case_count,
                 total_case_count,
+                run_tag,
             ): case
             for case in cases
         }
@@ -775,7 +792,8 @@ def run_sweep() -> list[dict[str, object]]:
             int(row["batch_size"]),
         )
     )
-    write_summary_csv(rows)
+    summary_csv_path = build_summary_csv_path(run_tag)
+    write_summary_csv(rows, summary_csv_path)
 
     if len(rows) != len(cases):
         raise ValueError(
@@ -786,9 +804,10 @@ def run_sweep() -> list[dict[str, object]]:
 
 
 def main() -> None:
-    rows = run_sweep()
+    run_tag = datetime.now().strftime("%Y%m%d_%H%M")
+    rows = run_sweep(run_tag)
     print(f"completed {len(rows)} sweep cases")
-    print(f"summary csv: {SUMMARY_CSV_PATH}")
+    print(f"summary csv: {build_summary_csv_path(run_tag)}")
 
 
 if __name__ == "__main__":

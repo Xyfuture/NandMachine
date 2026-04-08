@@ -6,6 +6,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -46,12 +47,21 @@ from nandmachine.simulator.hardware.xpu import xPU
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_CARD_PATH = REPO_ROOT / "model_cards" / "llama-405B.json"
 TRACE_ROOT = REPO_ROOT / "trace" / "main"
-SUMMARY_CSV_PATH = TRACE_ROOT / "llama_405b_sweep_summary.csv"
+SWEEP_NAME = "llama_405b_sweep"
 FULL_TRACE_FILE_NAME = "full_simulation.json"
 CONFIG_FILE_NAME = "config.json"
 COMPILE_MODE = "heuristic-GPU"
 MAX_WORKERS_ENV_VAR = "LLAMA_405B_SWEEP_MAX_WORKERS"
 CASE_LIMIT_ENV_VAR = "LLAMA_405B_SWEEP_CASE_LIMIT"
+
+
+def build_trace_root(run_tag: str) -> Path:
+    return TRACE_ROOT / f"{SWEEP_NAME}_{run_tag}"
+
+
+def build_summary_csv_path(run_tag: str) -> Path:
+    return TRACE_ROOT / f"{SWEEP_NAME}_summary_{run_tag}.csv"
+
 
 BASE_NAND_CONFIG = {
     "num_channels": 6 * 8,
@@ -73,14 +83,19 @@ SEQUENCE_LENGTHS: tuple[tuple[int, int], ...] = (
     (9400, 600),
 )
 HBM_ONLY_BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
-    8: (120, 64, 32, 16)
+    8: (64, 32, 16, 8),
+    16: (288, 144, 64, 32),
 }
 CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS: dict[int, dict[int, tuple[int, ...]]] = {
     50: {
-        8: (120,),
+        4: (28, 16, 8, 4),
+        8: (224, 128, 64, 32),
+        16: (608, 256, 128, 64),
     },
     100: {
-        8: (120,),
+        4: (224, 128, 64, 32),
+        8: (608, 256, 128, 64),
+        16: (1408, 512, 256, 128),
     },
 }
 
@@ -501,11 +516,10 @@ def run_macro_ops_with_trace(
     }
 
 
-def build_trace_dir(case: SweepCase) -> Path:
+def build_trace_dir(case: SweepCase, run_tag: str) -> Path:
     slo_segment = "slo_none" if case.slo_ms is None else f"slo_{case.slo_ms}ms"
     return (
-        TRACE_ROOT
-        / "llama_405b_sweep"
+        build_trace_root(run_tag)
         / case.hardware_type
         / f"ranks_{case.num_ranks}"
         / slo_segment
@@ -523,6 +537,7 @@ def build_result_row(
     max_workers: int,
     selected_case_count: int,
     total_case_count: int,
+    run_tag: str,
 ) -> dict[str, object]:
     if max_workers <= 0:
         raise ValueError(f"max_workers must be > 0, got {max_workers}")
@@ -539,6 +554,8 @@ def build_result_row(
         )
 
     hardware_spec = get_hardware_spec_or_raise(case.hardware_type)
+    trace_root = build_trace_root(run_tag)
+    summary_csv_path = build_summary_csv_path(run_tag)
     model_card = load_model_card_or_raise()
     raw_model_config = build_raw_model_config(deepcopy(model_card))
     model_config = LlamaModelConfig.from_dict(model_card)
@@ -569,7 +586,7 @@ def build_result_row(
         parallel_config,
     )
 
-    trace_dir = build_trace_dir(case)
+    trace_dir = build_trace_dir(case, run_tag)
     trace_path = trace_dir / FULL_TRACE_FILE_NAME
     sim_result = run_macro_ops_with_trace(
         nand_config,
@@ -649,8 +666,8 @@ def build_result_row(
     config_payload = {
         "script_config": {
             "model_card_path": str(MODEL_CARD_PATH),
-            "trace_root": str(TRACE_ROOT),
-            "summary_csv_path": str(SUMMARY_CSV_PATH),
+            "trace_root": str(trace_root),
+            "summary_csv_path": str(summary_csv_path),
             "full_trace_file_name": FULL_TRACE_FILE_NAME,
             "config_file_name": CONFIG_FILE_NAME,
             "compile_mode": COMPILE_MODE,
@@ -800,6 +817,7 @@ def run_case(
     max_workers: int,
     selected_case_count: int,
     total_case_count: int,
+    run_tag: str,
 ) -> dict[str, object]:
     try:
         return build_result_row(
@@ -807,6 +825,7 @@ def run_case(
             max_workers,
             selected_case_count,
             total_case_count,
+            run_tag,
         )
     except Exception as exc:  # noqa: BLE001
         return build_error_row(
@@ -818,16 +837,19 @@ def run_case(
         )
 
 
-def write_summary_csv(rows: list[dict[str, object]]) -> None:
-    TRACE_ROOT.mkdir(parents=True, exist_ok=True)
-    with SUMMARY_CSV_PATH.open("w", newline="") as csv_file:
+def write_summary_csv(
+    rows: list[dict[str, object]],
+    summary_csv_path: Path,
+) -> None:
+    summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with summary_csv_path.open("w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
 
 
-def run_sweep() -> list[dict[str, object]]:
+def run_sweep(run_tag: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     all_cases = build_sweep_cases()
     if not all_cases:
@@ -846,6 +868,7 @@ def run_sweep() -> list[dict[str, object]]:
                 max_workers,
                 selected_case_count,
                 total_case_count,
+                run_tag,
             ): case
             for case in cases
         }
@@ -862,7 +885,8 @@ def run_sweep() -> list[dict[str, object]]:
             int(row["batch_size"]),
         )
     )
-    write_summary_csv(rows)
+    summary_csv_path = build_summary_csv_path(run_tag)
+    write_summary_csv(rows, summary_csv_path)
 
     if len(rows) != len(cases):
         raise ValueError(
@@ -872,9 +896,10 @@ def run_sweep() -> list[dict[str, object]]:
     return rows
 
 def main() -> None:
-    rows = run_sweep()
+    run_tag = datetime.now().strftime("%Y%m%d_%H%M")
+    rows = run_sweep(run_tag)
     print(f"completed {len(rows)} sweep cases")
-    print(f"summary csv: {SUMMARY_CSV_PATH}")
+    print(f"summary csv: {build_summary_csv_path(run_tag)}")
 
 
 if __name__ == "__main__":
