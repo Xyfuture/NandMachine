@@ -13,6 +13,32 @@ from nandmachine.config.interconnect_config import (
 from nandmachine.simulator.software.communication_primitives_of_dense import AllReduceSimulation
 
 
+def _expected_phase_latency(
+    participant_count: int,
+    link_bandwidth_per_direction: float,
+    link_latency: float,
+    header_size: float,
+    max_payload_size: float,
+    link_count_per_device: float,
+    bytes_per_device: float,
+    imbalance_factor: float = 1.0,
+) -> float:
+    bytes_per_peer = bytes_per_device / (participant_count - 1)
+    effective_bytes_per_peer = (
+        header_size
+        + math.ceil(bytes_per_peer / max_payload_size) * header_size
+        + bytes_per_peer
+    )
+    edge_bandwidth_per_direction = (
+        link_bandwidth_per_direction
+        * link_count_per_device
+        / (participant_count - 1)
+    )
+    return imbalance_factor * (
+        link_latency + effective_bytes_per_peer / edge_bandwidth_per_direction
+    )
+
+
 def test_constructor_rejects_unsupported_weight_bits() -> None:
     with pytest.raises(ValueError, match="Unsupported weight_bits"):
         AllReduceSimulation(num_gpus=4, data_size=128, weight_bits=4)
@@ -124,6 +150,101 @@ def test_compile_and_simulate_supports_time_ns() -> None:
     )
     assert sim.cycle_count == cycles
     assert sim.time_ns == time_ns
+
+
+def test_simulate_uses_full_local_tensor_bytes_for_small_fc_allreduce() -> None:
+    base_interconnect = get_interconnect_for_device_or_raise(
+        device_name="A100_80GB",
+        device_count=4,
+    )
+    interconnect = InterConnectModule(
+        device_count=base_interconnect.device_count,
+        topology=base_interconnect.topology,
+        link_module=base_interconnect.link_module,
+        link_count_per_device=base_interconnect.link_count_per_device,
+        internal_link_bandwidth_per_direction=1e9,
+    )
+    sim = AllReduceSimulation(
+        num_gpus=4,
+        data_size=128,
+        weight_bits=16,
+        allreduce_params={"internal_copy_multiplier": 1.5},
+    )
+
+    phase_bytes_per_device = 128 * (4 - 1) / 4
+    phase_latency = _expected_phase_latency(
+        participant_count=4,
+        link_bandwidth_per_direction=interconnect.link_module.bandwidth_per_direction,
+        link_latency=interconnect.link_module.latency,
+        header_size=interconnect.link_module.header_size,
+        max_payload_size=interconnect.link_module.max_payload_size,
+        link_count_per_device=interconnect.link_count_per_device,
+        bytes_per_device=phase_bytes_per_device,
+    )
+    internal_latency = 1.5 * (2 * phase_bytes_per_device) / 1e9
+    expected_latency = 2 * phase_latency + internal_latency
+
+    assert sim.simulate(interconnect) == pytest.approx(expected_latency)
+
+
+def test_simulate_uses_correct_phase_bytes_for_hierarchical_allreduce() -> None:
+    base_interconnect = get_interconnect_for_device_or_raise(
+        device_name="A100_80GB",
+        device_count=16,
+    )
+    interconnect = InterConnectModule(
+        device_count=base_interconnect.device_count,
+        topology=base_interconnect.topology,
+        link_module=base_interconnect.link_module,
+        link_count_per_device=base_interconnect.link_count_per_device,
+        internal_link_bandwidth_per_direction=2e9,
+    )
+    sim = AllReduceSimulation(
+        num_gpus=16,
+        data_size=128,
+        weight_bits=16,
+        allreduce_params={
+            "gpus_per_node": 8,
+            "internal_copy_multiplier": 0.25,
+            "inter_node_bandwidth_per_direction": 40e9,
+            "inter_node_latency": 5e-6,
+            "inter_node_header_size": 64.0,
+            "inter_node_max_payload_size": 4096.0,
+            "inter_node_link_count_per_device": 1.0,
+            "inter_node_oversubscription_factor": 1.5,
+        },
+    )
+
+    phase_bytes_per_device = 128 * (16 - 1) / 16
+    intra_share = (8 - 1) / (16 - 1)
+    inter_share = (16 - 8) / (16 - 1)
+    intra_bytes_per_device = phase_bytes_per_device * intra_share
+    inter_bytes_per_device = phase_bytes_per_device * inter_share
+
+    intra_phase_latency = _expected_phase_latency(
+        participant_count=8,
+        link_bandwidth_per_direction=interconnect.link_module.bandwidth_per_direction,
+        link_latency=interconnect.link_module.latency,
+        header_size=interconnect.link_module.header_size,
+        max_payload_size=interconnect.link_module.max_payload_size,
+        link_count_per_device=interconnect.link_count_per_device,
+        bytes_per_device=intra_bytes_per_device,
+    )
+    inter_phase_latency = _expected_phase_latency(
+        participant_count=2,
+        link_bandwidth_per_direction=40e9,
+        link_latency=5e-6,
+        header_size=64.0,
+        max_payload_size=4096.0,
+        link_count_per_device=1.0,
+        bytes_per_device=inter_bytes_per_device,
+        imbalance_factor=1.5,
+    )
+    phase_latency = max(intra_phase_latency, inter_phase_latency)
+    internal_latency = 0.25 * (2 * phase_bytes_per_device) / 2e9
+    expected_latency = 2 * phase_latency + internal_latency
+
+    assert sim.simulate(interconnect) == pytest.approx(expected_latency)
 
 
 def test_hierarchical_gpus_per_node_validation() -> None:

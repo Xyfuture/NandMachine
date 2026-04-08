@@ -89,6 +89,8 @@ class AllReduceSimulation(CommunicationPrimitive):
         if participant_count <= 1 or bytes_per_device <= 0:
             return 0.0
 
+        # bytes_per_device is the total bytes one rank sends during a single
+        # collective phase. Each peer receives an equal-sized chunk.
         bytes_per_peer = bytes_per_device / (participant_count - 1)
         effective_bytes_per_peer = (
             header_size
@@ -125,8 +127,13 @@ class AllReduceSimulation(CommunicationPrimitive):
         link_count_per_device = interconnect_module.link_count_per_device
         load_imbalance_factor = self.allreduce_params["load_imbalance_factor"]
 
-        # data_size semantics: bytes one rank sends to one peer rank.
-        bytes_per_device = self.data_size * (self.num_gpus - 1)
+        # data_size semantics in the dense simulator: bytes of the full local
+        # tensor owned by one rank before the all-reduce. A single
+        # reduce-scatter or all-gather phase sends (N-1)/N of that tensor.
+        full_local_tensor_bytes = self.data_size
+        phase_bytes_per_device = (
+            full_local_tensor_bytes * (self.num_gpus - 1) / self.num_gpus
+        )
 
         if self.num_gpus <= 8:
             reduce_scatter_latency = self._single_layer_collective_phase_latency(
@@ -136,7 +143,7 @@ class AllReduceSimulation(CommunicationPrimitive):
                 header_size=header_size,
                 max_payload_size=max_payload_size,
                 link_count_per_device=link_count_per_device,
-                bytes_per_device=bytes_per_device,
+                bytes_per_device=phase_bytes_per_device,
                 imbalance_factor=load_imbalance_factor,
             )
             allgather_latency = self._single_layer_collective_phase_latency(
@@ -146,7 +153,7 @@ class AllReduceSimulation(CommunicationPrimitive):
                 header_size=header_size,
                 max_payload_size=max_payload_size,
                 link_count_per_device=link_count_per_device,
-                bytes_per_device=bytes_per_device,
+                bytes_per_device=phase_bytes_per_device,
                 imbalance_factor=load_imbalance_factor,
             )
         else:
@@ -161,8 +168,8 @@ class AllReduceSimulation(CommunicationPrimitive):
 
             intra_share = (gpus_per_node - 1) / (self.num_gpus - 1)
             inter_share = (self.num_gpus - gpus_per_node) / (self.num_gpus - 1)
-            intra_bytes_per_device = bytes_per_device * intra_share
-            inter_bytes_per_device = bytes_per_device * inter_share
+            intra_bytes_per_device = phase_bytes_per_device * intra_share
+            inter_bytes_per_device = phase_bytes_per_device * inter_share
 
             reduce_scatter_intra_latency = self._single_layer_collective_phase_latency(
                 participant_count=gpus_per_node,
@@ -221,7 +228,7 @@ class AllReduceSimulation(CommunicationPrimitive):
             allgather_latency = max(allgather_intra_latency, allgather_inter_latency)
 
         internal_copy_bytes = self.allreduce_params["internal_copy_multiplier"] * (
-            2 * bytes_per_device
+            2 * phase_bytes_per_device
         )
         internal_latency = (
             internal_copy_bytes
