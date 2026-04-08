@@ -83,18 +83,14 @@ SEQUENCE_LENGTHS: tuple[tuple[int, int], ...] = (
     (18800, 1200),
 )
 HBM_ONLY_BATCH_SIZES_BY_RANKS: dict[int, tuple[int, ...]] = {
-    8: (40, 32, 16, 8),
-    16: (352, 256, 128, 64),
+    16: (352,),
 }
 CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS: dict[int, dict[int, tuple[int, ...]]] = {
     50: {
-        8: (256, 128, 64, 32),
-        16: (800, 512, 256, 128),
+        16: (800,),
     },
     100: {
-        4: (256, 128, 64, 32),
-        8: (800, 512, 256, 128),
-        16: (1872, 1024, 512, 256),
+        16: (1872,),
     },
 }
 
@@ -280,13 +276,11 @@ def build_sweep_cases() -> list[SweepCase]:
     cases: list[SweepCase] = []
     for hardware_spec in HARDWARE_SPECS:
         mode = str(hardware_spec.memory_architecture["mode"])
-        if mode == "cli":
-            continue
 
         batch_sizes_by_ranks_by_slo: dict[int | None, dict[int, tuple[int, ...]]]
         if mode == "hbm_only":
             batch_sizes_by_ranks_by_slo = {None: HBM_ONLY_BATCH_SIZES_BY_RANKS}
-        elif mode == "csi":
+        elif mode in ("csi", "cli"):
             batch_sizes_by_ranks_by_slo = {
                 slo_ms: batch_sizes_by_ranks
                 for slo_ms, batch_sizes_by_ranks in CSI_BATCH_SIZES_BY_RANKS_BY_SLO_MS.items()
@@ -410,8 +404,9 @@ def build_runtime_spec(hardware_spec: HardwareSpec, nand_config: NandConfig) -> 
     if device.memory_architecture_mode == "hbm_only":
         sim_hbm_bandwidth_GBps = device.io_module.hbm_bandwidth / 1e9
     elif device.memory_architecture_mode == "cli":
+        derived_hbf_bandwidth_GBps = device.io_module.hbf_bandwidth / 1e9
         residual_bandwidth_bytes_per_sec = (
-            device.io_module.total_bandwidth - derived_hbf_bandwidth_GBps * 1e9
+            device.io_module.total_bandwidth - device.io_module.hbf_bandwidth
         )
         if residual_bandwidth_bytes_per_sec <= 0:
             raise ValueError(
