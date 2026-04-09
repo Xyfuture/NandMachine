@@ -98,8 +98,6 @@ def resolve_batch_partition_size_or_raise(parallel_config: ParallelConfig | None
     if isinstance(parallel_config, MoEParallelConfig):
         return parallel_config.attn_dp_size
 
-    if isinstance(parallel_config, ParallelConfig):
-        return parallel_config.num_ranks
 
     raise TypeError(f"Unsupported parallel_config type: {type(parallel_config).__name__}")
 

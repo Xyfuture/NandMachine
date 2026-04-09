@@ -663,34 +663,34 @@ class TransferEngine(SimModule):
         if macro_op.num_gpus == 1 or macro_op.data_size == 0:
             return 1
 
-        # interconnect = get_interconnect_for_device_or_raise(
-        #     device_name=self.device_name,
-        #     device_count=macro_op.num_gpus,
-        # )
+        interconnect = get_interconnect_for_device_or_raise(
+            device_name=self.device_name,
+            device_count=macro_op.num_gpus,
+        )
 
-        # word_size = self._bytes_per_value(macro_op.weight_bits)
-        # if macro_op.data_size % word_size != 0:
-        #     raise ValueError(
-        #         "All2AllOp.data_size must be divisible by source word size. "
-        #         f"data_size={macro_op.data_size}, source_word_size={word_size}"
-        #     )
+        word_size = self._bytes_per_value(macro_op.weight_bits)
+        if macro_op.data_size % word_size != 0:
+            raise ValueError(
+                "All2AllOp.data_size must be divisible by source word size. "
+                f"data_size={macro_op.data_size}, source_word_size={word_size}"
+            )
 
-        # all2all_sim = AllToAllPrimitive_Simulation(
-        #     num_gpus=macro_op.num_gpus,
-        #     data_size=macro_op.data_size,
-        #     weight_bits=macro_op.weight_bits,
-        # )
-        # all2all_time_ns = all2all_sim.compile_and_simulate(
-        #     pcb_module=self.device,
-        #     interconnect_module=interconnect,
-        #     compile_mode=self.compile_mode,
-        #     return_unit="time_ns",
-        # )
+        all2all_sim = AllToAllPrimitive_Simulation(
+            num_gpus=macro_op.num_gpus,
+            data_size=macro_op.data_size,
+            weight_bits=macro_op.weight_bits,
+        )
+        all2all_time_ns = all2all_sim.compile_and_simulate(
+            pcb_module=self.device,
+            interconnect_module=interconnect,
+            compile_mode=self.compile_mode,
+            return_unit="time_ns",
+        )
 
-        if macro_op.num_gpus <= 8 :
-            all2all_time_ns = macro_op.data_size / (450) 
-        else:
-            all2all_time_ns = macro_op.data_size / (40)
+        # if macro_op.num_gpus <= 8 :
+        #     all2all_time_ns = macro_op.data_size / (450) 
+        # else:
+        #     all2all_time_ns = macro_op.data_size / (40)
 
         return _normalize_time_ns(all2all_time_ns, "all2all_time_ns")
 

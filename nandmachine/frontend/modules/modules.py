@@ -828,7 +828,7 @@ class FusedMoE(HookModuleBase):
 
         expert_batch_size = max(
             1,
-            math.ceil(graph_meta.batch_size * self.top_k / self.num_experts),
+            math.ceil(graph_meta.global_batch_size * self.top_k / self.num_experts),
         )
         expert_graph_meta = graph_meta.with_batch_size(expert_batch_size)
         macro_op_list: list[MacroOp] = []

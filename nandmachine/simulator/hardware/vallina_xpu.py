@@ -14,6 +14,7 @@ from nandmachine.commands.macro import (
     MatMulOp,
     SramPrefetch,
     SramPrefetchRelease,
+    VectorOp,
 )
 from nandmachine.config.config import NandConfig
 from nandmachine.simulator.hardware.utils import DepSlot
@@ -73,28 +74,54 @@ class VallinaPrefetchEngine(SimModule):
 
 
 class VallinaComputeEngine(ComputeEngine):
-    def execute_macro_op(self, macro_op: MacroOp) -> float:
-        execute_time_ns = super().execute_macro_op(macro_op)
+    def process(self):
+        # Count flash attention ops once so the simplified pipeline rule can
+        # identify whether the last flash op must keep the serial softmax tail.
+        flash_op_count = sum(
+            1 for macro_op_slot in self.command_queue if isinstance(macro_op_slot.payload, FlashAttnOp)
+        )
+        flash_op_index = 0
 
-        if isinstance(macro_op, MatMulOp):
-            return _normalize_time_ns(
-                execute_time_ns + self.config.tRead,
-                "vallina_matmul_time_ns",
+        # 做好相关的同步 
+        for macro_op_slot in self.command_queue:
+            for input_slot in macro_op_slot.input_slots:
+                if not input_slot.is_finished:
+                    SimModule.wait(input_slot.finish_event)
+            
+            start_cycle = _get_current_sim_cycle()
+            if isinstance(macro_op_slot.payload, FlashAttnOp):
+                qk_bmm_time_ns, softmax_time_ns, sv_bmm_time_ns = (
+                    self._estimate_flashattn_component_times_ns(macro_op_slot.payload)
+                )
+                is_last_flash_op = flash_op_index == flash_op_count - 1
+
+                # Pair every flash op with the next one and hide softmax behind
+                # the longer SV stage. Only the last tail op keeps serial softmax.
+                if flash_op_count % 2 == 1 and is_last_flash_op:
+                    execute_time_ns = qk_bmm_time_ns + softmax_time_ns + sv_bmm_time_ns
+                else:
+                    execute_time_ns = qk_bmm_time_ns + max(softmax_time_ns, sv_bmm_time_ns)
+                flash_op_index += 1
+            else:
+                execute_time_ns = self.execute_macro_op(macro_op_slot.payload)
+            if not isinstance(macro_op_slot.payload,VectorOp):
+                execute_time_ns += self.config.tRead
+            wait_time_ns = _normalize_time_ns(execute_time_ns, "execute_time_ns")
+            SimModule.wait_time(SimTime(wait_time_ns))
+            end_cycle = _get_current_sim_cycle()
+            _record_macro_op_trace(
+                self.tracer,
+                self.trace_track,
+                macro_op_slot.payload,
+                start_cycle,
+                end_cycle,
+                "compute",
             )
+            macro_op_slot.finish_event.notify(SimTime(1))
+            SimModule.wait(macro_op_slot.finish_event)
+            macro_op_slot.is_finished = True
 
-        if isinstance(macro_op, FlashAttnOp):
-            return _normalize_time_ns(
-                execute_time_ns + 2 * self.config.tRead,
-                "vallina_flashattn_time_ns",
-            )
-
-        if isinstance(macro_op, FlashMLAOp):
-            return _normalize_time_ns(
-                execute_time_ns + 2 * self.config.tRead,
-                "vallina_flashmla_time_ns",
-            )
-
-        return execute_time_ns
+            print(macro_op_slot.payload)
 
 
 class VallinaXPU(xPU):
