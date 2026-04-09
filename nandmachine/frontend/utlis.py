@@ -190,20 +190,25 @@ def build_imbalanced_kv_cache_state(
         * nand_config.page_size_bytes
         // inference_config.kv_block_size_bytes
     )
+    
+
+    balls = balanced_state.num_kv_blocks // (inference_config.parallel_config.num_ranks)
 
     num_hyper_pages = _simulate_max_bin_load_mean(
-        num_balls=balanced_state.num_kv_blocks,
+        num_balls=balls,
         num_bins=bins,
         num_trials=_IMBALANCED_KV_CACHE_MONTE_CARLO_TRIALS,
         seed=_IMBALANCED_KV_CACHE_RANDOM_SEED,
     )
+    num_kv_blocks = num_hyper_pages * (nand_config.num_channels*nand_config.num_plane * nand_config.page_size_bytes) // inference_config.kv_block_size_bytes
 
     return KVCacheState(
-        total_kv_cache_size_per_layer=balanced_state.total_kv_cache_size_per_layer,
-        num_nand_pages_per_layer=balanced_state.num_nand_pages_per_layer,
+        total_kv_cache_size_per_layer= num_hyper_pages * (nand_config.num_channels*nand_config.num_plane * nand_config.page_size_bytes),
+        num_nand_pages_per_layer=num_hyper_pages * (nand_config.num_channels*nand_config.num_plane),
         num_hyper_pages_per_layer=num_hyper_pages,
         kv_block_size_tokens=balanced_state.kv_block_size_tokens,
-        num_kv_blocks=balanced_state.num_kv_blocks,
+        num_kv_blocks=num_kv_blocks,
+        is_imbalance=True
     )
 
 

@@ -92,3 +92,19 @@ nand 部分添加一个 feature ，等待容量空闲的特性
 
 mla 中有一个问题
 bmm 中的不同的 matmul 实际上是共享 一个 input 的 / 需要修正这个 bug 
+
+
+
+
+
+测试消融实验
+
+你看一下 nandmachine/simulator/hardware/vallina_xpu.py 中现在的实现， 这个的主要目的是 bypass prefetch 的功能。现在这个是可以跑的吗
+
+
+
+我现在希望进行一个消融实验，在同一个 config 下, 跑 5 个情况
+- 完全没有任何优化的情况
+    - 使用 vallina_xpu 运行
+    - 使用 build_imbalanced_kv_cache_state 构建 kv cache 状态
+

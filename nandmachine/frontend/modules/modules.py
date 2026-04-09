@@ -397,6 +397,16 @@ class Attention(HookModuleBase):
             ceil_div(local_total_kv_bytes, block_bytes) if local_total_kv_bytes > 0 else 0
         )
 
+        # TODO  引入 imbalanced 的 kv 的情况 
+
+        kv_cache_state = graph_meta.kv_cache_state
+
+        if kv_cache_state.is_imbalance:
+            # 复写这一部分
+            num_kv_blocks = kv_cache_state.num_kv_blocks
+        
+
+
         return (
             group_size,
             num_kv_heads,

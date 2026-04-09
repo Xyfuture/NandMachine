@@ -18,7 +18,7 @@ class KVCacheState:
     num_nand_pages_per_layer: int # 需要多少 page 来存储 所有的 KV Block
     num_hyper_pages_per_layer: int # page 组合成多少个 hyper page
 
-
+    is_imbalance:bool = False
 
 
 @dataclass(frozen=True)
