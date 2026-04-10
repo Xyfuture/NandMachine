@@ -103,8 +103,45 @@ bmm 中的不同的 matmul 实际上是共享 一个 input 的 / 需要修正这
 
 
 
-我现在希望进行一个消融实验，在同一个 config 下, 跑 5 个情况
-- 完全没有任何优化的情况
-    - 使用 vallina_xpu 运行
-    - 使用 build_imbalanced_kv_cache_state 构建 kv cache 状态
+我现在希望进行一个消融实验，在同一个 configuration 下, 跑 6 种情况
+1. BaselineHBM
+    - 使用纯 HBM 的 GPU，不需要配置任何相关 Nand 相关的设置
+2. PlainHBF
+    - 什么优化都没有的 HBF-GPU
+    - 使用 nandmachine/simulator/hardware/vallina_xpu.py 中的 vallina_xpu 来跑
+    - 使用 imbalanced kv cache state 来计算 kv cache 相关的信息
+    - 在 nand config 的配置中，使用 将enable_strict 设置为 True
+3. WO-Prefetch
+    - 单纯使用 nandmachine/simulator/hardware/vallina_xpu.py 中的 vallina_xpu 来跑
+    - 其他配置和 FlashAccel 看齐
+4. WO-WeightLayout
+    - 单纯在 nand config 的配置中，使用 将enable_strict 设置为 True
+    - 其他配置和 FlashAccel 看齐
+5. WO-KVCacheLayout
+    - 单纯使用 imbalanced kv cache state 来计算 kv cache 相关的信息
+    - 其他配置和 FlashAccel 看齐
+6. FlashAccel
+    - 使用 6 个 HBF 的 csi 架构， 参数可以参考 scripts/qwen3_moe_sweep.py 中关于 csi 架构的参数
+    - nand config 中设置 enable_strict 为 False
+    - 和 scripts/qwen3_moe_sweep.py 中一样采取 run_sim 的操作
+    - 其他的参数可以参考 scripts/qwen3_moe_sweep.py 中的设置
+
+所有的配置都是使用 8 个卡
+
+需要 sweep 的 configuration 是这样的
+- model 固定为 qwen3-moe 
+- Sequence length 是固定的，都是 9400 的 input Sequence length ， 600 的 output Sequence length 
+- 需要 sweep 两种 batch size
+    - 第一个是 batch size = 256 
+    - 第二个 对于不同的 设备有不同的要求
+        - 对于 Baseline HBM 来说，计算 batch size = 400
+        - 对于其他 5 个配置而言，计算 batch size = [(2080, 2048, 1024, 512)]                                         
+
+你需要新写一个py文件完成 消融实验，代码放到 scripts 目录下， 然后参考 scripts/qwen3_moe_sweep.py 中的方式，输出一下 csv 文件，作为最后的结果
+
+
+
+
+TODO
+更新一下阻塞模式的运行
 
