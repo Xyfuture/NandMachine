@@ -161,68 +161,35 @@ SEQUENCE_CASE_CONFIGS: tuple[SequenceCaseConfig, ...] = (
         },
     ),
     SequenceCaseConfig(
-        input_sequence_length=8000,
+        input_sequence_length=27000,
         output_sequence_length=1000,
         hbm_batch_sizes_by_ranks={
-            4: (56, 32, 16, 8),  # total capacity: 564 GiB, remaining for KV: 94 GiB, max batch size: 58
-            8: (400, 256, 128, 64),  # total capacity: 1128 GiB, remaining for KV: 658 GiB, max batch size: 407
-            16: (1104, 1024, 512, 256),  # total capacity: 2256 GiB, remaining for KV: 1786 GiB, max batch size: 1106
+            4: (16, 8, 4),  # total capacity: 564 GiB, remaining for KV: 94 GiB, max batch size: 18
+            8: (128, 64, 32, 16),  # total capacity: 1128 GiB, remaining for KV: 658 GiB, max batch size: 131
+            16: (352, 256, 128, 64),  # total capacity: 2256 GiB, remaining for KV: 1786 GiB, max batch size: 355
         },
         csi_batch_sizes_by_ranks_by_slo_ms={
             50: {
-                4: (300, 256, 128, 64),  # total capacity: 960 GiB, remaining for KV: 490 GiB, max batch size: 303
-                8: (896, 512, 256, 128),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 898
-                16: (2080, 2048, 1024, 512),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 2088
+                4: (96, 64, 32, 16),  # total capacity: 960 GiB, remaining for KV: 490 GiB, max batch size: 97
+                8: (280, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 288
+                16: (656, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 671
             },
             100: {
-                4: (896, 512, 256, 128),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 898
-                8: (2080, 2048, 1024, 512),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 2088
-                16: (4464, 4096, 2048, 1024),  # total capacity: 7680 GiB, remaining for KV: 7210 GiB, max batch size: 4468
+                4: (284, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 288
+                8: (664, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 671
+                16: (1424, 1024, 512, 256),  # total capacity: 7680 GiB, remaining for KV: 7210 GiB, max batch size: 1436
             },
         },
         cli_batch_sizes_by_ranks_by_slo_ms={
             50: {
-                4: (200, 128, 64, 32),  # total capacity: 800 GiB, remaining for KV: 330 GiB, max batch size: 204
-                8: (696, 512, 256, 128),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 700
-                16: (1680, 1024, 512, 256),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 1691
+                4: (64, 32, 16, 8),  # total capacity: 800 GiB, remaining for KV: 330 GiB, max batch size: 65
+                8: (224, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 225
+                16: (528, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 543
             },
             100: {
-                4: (696, 512, 256, 128),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 700
-                8: (1688, 1024, 512, 256),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 1691
-                16: (3664, 2048, 1024, 512),  # total capacity: 6400 GiB, remaining for KV: 5930 GiB, max batch size: 3674
-            },
-        },
-    ),
-    SequenceCaseConfig(
-        input_sequence_length=20000,
-        output_sequence_length=1000,
-        hbm_batch_sizes_by_ranks={
-            4: (20, 16, 8, 4),  # total capacity: 564 GiB, remaining for KV: 94 GiB, max batch size: 24
-            8: (168, 128, 64, 32),  # total capacity: 1128 GiB, remaining for KV: 658 GiB, max batch size: 174
-            16: (464, 256, 128, 64),  # total capacity: 2256 GiB, remaining for KV: 1786 GiB, max batch size: 474
-        },
-        csi_batch_sizes_by_ranks_by_slo_ms={
-            50: {
-                4: (128, 64, 32, 16),  # total capacity: 960 GiB, remaining for KV: 490 GiB, max batch size: 130
-                8: (384, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 385
-                16: (880, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 895
-            },
-            100: {
-                4: (384, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 1450 GiB, max batch size: 385
-                8: (888, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3370 GiB, max batch size: 895
-                16: (1904, 1024, 512, 256),  # total capacity: 7680 GiB, remaining for KV: 7210 GiB, max batch size: 1914
-            },
-        },
-        cli_batch_sizes_by_ranks_by_slo_ms={
-            50: {
-                4: (84, 64, 32, 16),  # total capacity: 800 GiB, remaining for KV: 330 GiB, max batch size: 87
-                8: (296, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 300
-                16: (720, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 725
-            },
-            100: {
-                4: (296, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 300
-                8: (720, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 725
-                16: (1568, 1024, 512, 256),  # total capacity: 6400 GiB, remaining for KV: 5930 GiB, max batch size: 1574
+                4: (224, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 1130 GiB, max batch size: 225
+                8: (536, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2730 GiB, max batch size: 543
+                16: (1168, 1024, 512, 256),  # total capacity: 6400 GiB, remaining for KV: 5930 GiB, max batch size: 1181
             },
         },
     ),
