@@ -153,54 +153,28 @@ SEQUENCE_CASE_CONFIGS: tuple[SequenceCaseConfig, ...] = (
         },
     ),
     SequenceCaseConfig(
-        input_sequence_length=8000,
+        input_sequence_length=27000,
         output_sequence_length=1000,
         hbm_batch_sizes_by_ranks={
-            8: (72, 64, 32, 16),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 73
+            8: (16, 8),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 23
         },
         csi_batch_sizes_by_ranks_by_slo_ms={
             50: {
-                4: (32, 16, 8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 34
-                8: (248, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 256
+                4: (8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 11
+                8: (80, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 82
             },
             100: {
-                4: (252, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 256
-                8: (696, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 700
+                4: (80, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 82
+                8: (224, 128, 64, 32),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 225
             },
         },
         cli_batch_sizes_by_ranks_by_slo_ms={
             50: {
-                8: (176, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 182
+                8: (56, 32, 16, 8),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 58
             },
             100: {
-                4: (180, 128, 64, 32),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 182
-                8: (544, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 552
-            },
-        },
-    ),
-    SequenceCaseConfig(
-        input_sequence_length=20000,
-        output_sequence_length=1000,
-        hbm_batch_sizes_by_ranks={
-            8: (24, 16, 8),  # total capacity: 1128 GiB, remaining for KV: 318 GiB, max batch size: 31
-        },
-        csi_batch_sizes_by_ranks_by_slo_ms={
-            50: {
-                4: (12, 8, 4),  # total capacity: 960 GiB, remaining for KV: 150 GiB, max batch size: 14
-                8: (104, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 109
-            },
-            100: {
-                4: (108, 64, 32, 16),  # total capacity: 1920 GiB, remaining for KV: 1110 GiB, max batch size: 109
-                8: (296, 256, 128, 64),  # total capacity: 3840 GiB, remaining for KV: 3030 GiB, max batch size: 300
-            },
-        },
-        cli_batch_sizes_by_ranks_by_slo_ms={
-            50: {
-                8: (72, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 78
-            },
-            100: {
-                4: (76, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 78
-                8: (232, 128, 64, 32),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 236
+                4: (56, 32, 16, 8),  # total capacity: 1600 GiB, remaining for KV: 790 GiB, max batch size: 58
+                8: (176, 128, 64, 32),  # total capacity: 3200 GiB, remaining for KV: 2390 GiB, max batch size: 177
             },
         },
     ),
