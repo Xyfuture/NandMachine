@@ -849,12 +849,20 @@ class FusedMoE(HookModuleBase):
 
         # 依赖上一条指令，避免 all to all 接不起来
         dep_previous:bool = False
+
+        first_expert:bool = True
         for expert in self.experts:
             op_list = expert.macro_code_gen(expert_graph_meta)
-            
-            if not dep_previous:
-                first_non_prefetch_op(op_list).add_inputs(last_non_release_op(macro_op_list))
-                dep_previous = True
+            if graph_meta.nand_config.enable_strict :
+                if first_expert:
+                    op_list[0].add_inputs(last_non_release_op(macro_op_list))
+                    first_expert = False
+                else:
+                    first_non_prefetch_op(op_list).add_inputs(last_non_release_op(macro_op_list))
+            else:
+                if not dep_previous:
+                    first_non_prefetch_op(op_list).add_inputs(last_non_release_op(macro_op_list))
+                    dep_previous = True
 
             macro_op_list.extend(op_list)
             

@@ -90,6 +90,11 @@ class NandSimCoreSimple:
                 / (self.nand_config.num_plane * self.nand_config.num_channels)
                 * self.nand_config.tRead
             )
+
+        if  self.nand_config.enable_strict:
+            latency_ns = math.ceil( access_num_pages / (self.nand_config.num_plane * self.nand_config.num_channels)) \
+                            * self.nand_config.tRead
+            
         
         finish_time_ns = latency_ns + arrive_time_ns
         return finish_time_ns
