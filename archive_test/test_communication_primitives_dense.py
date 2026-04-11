@@ -39,6 +39,34 @@ def _expected_phase_latency(
     )
 
 
+def _expected_ring_allreduce_latency(
+    num_gpus: int,
+    link_bandwidth_per_direction: float,
+    link_latency: float,
+    header_size: float,
+    max_payload_size: float,
+    link_count_per_device: float,
+    bytes_per_hop: float,
+    imbalance_factor: float = 1.0,
+) -> float:
+    effective_bytes_per_hop = (
+        header_size
+        + math.ceil(bytes_per_hop / max_payload_size) * header_size
+        + bytes_per_hop
+    )
+    edge_bandwidth_per_direction = (
+        link_bandwidth_per_direction * link_count_per_device
+    )
+    startup_latency = 2 * link_latency
+    data_latency = (
+        2
+        * (num_gpus - 1)
+        * effective_bytes_per_hop
+        / edge_bandwidth_per_direction
+    )
+    return imbalance_factor * (startup_latency + data_latency)
+
+
 def test_constructor_rejects_unsupported_weight_bits() -> None:
     with pytest.raises(ValueError, match="Unsupported weight_bits"):
         AllReduceSimulation(num_gpus=4, data_size=128, weight_bits=4)
@@ -65,7 +93,7 @@ def test_simulate_returns_zero_for_single_gpu_or_zero_data() -> None:
     assert sim_zero.simulate(interconnect_multi) == 0.0
 
 
-def test_simulate_raises_for_non_fc_topology() -> None:
+def test_simulate_supports_ring_topology() -> None:
     fc_interconnect = get_interconnect_for_device_or_raise(
         device_name="A100_80GB",
         device_count=4,
@@ -79,8 +107,7 @@ def test_simulate_raises_for_non_fc_topology() -> None:
     )
 
     sim = AllReduceSimulation(num_gpus=4, data_size=128, weight_bits=16)
-    with pytest.raises(NotImplementedError, match="FC topology only"):
-        sim.simulate(ring_interconnect)
+    assert sim.simulate(ring_interconnect) > 0.0
 
 
 def test_simulate_raises_for_device_count_mismatch() -> None:
@@ -245,6 +272,86 @@ def test_simulate_uses_correct_phase_bytes_for_hierarchical_allreduce() -> None:
     expected_latency = 2 * phase_latency + internal_latency
 
     assert sim.simulate(interconnect) == pytest.approx(expected_latency)
+
+
+def test_ring_allreduce_h200_8gpu_latency_regression() -> None:
+    interconnect = get_interconnect_for_device_or_raise(
+        device_name="H200_SXM",
+        device_count=8,
+        topology=TopologyType.RING,
+    )
+    sim = AllReduceSimulation(num_gpus=8, data_size=2097152, weight_bits=16)
+
+    assert sim.simulate(interconnect) * 1e6 == pytest.approx(10.665813333333332)
+
+
+def test_ring_allreduce_matches_fc_in_current_idealized_model() -> None:
+    fc_interconnect = get_interconnect_for_device_or_raise(
+        device_name="H200_SXM",
+        device_count=8,
+        topology=TopologyType.FC,
+    )
+    ring_interconnect = get_interconnect_for_device_or_raise(
+        device_name="H200_SXM",
+        device_count=8,
+        topology=TopologyType.RING,
+    )
+
+    fc_sim = AllReduceSimulation(num_gpus=8, data_size=2097152, weight_bits=16)
+    ring_sim = AllReduceSimulation(num_gpus=8, data_size=2097152, weight_bits=16)
+
+    assert ring_sim.simulate(ring_interconnect) == pytest.approx(
+        fc_sim.simulate(fc_interconnect)
+    )
+
+
+def test_ring_allreduce_startup_and_data_latency_breakdown() -> None:
+    ring_interconnect = get_interconnect_for_device_or_raise(
+        device_name="H200_SXM",
+        device_count=8,
+        topology=TopologyType.RING,
+    )
+    fc_interconnect = get_interconnect_for_device_or_raise(
+        device_name="H200_SXM",
+        device_count=8,
+        topology=TopologyType.FC,
+    )
+    ring_sim = AllReduceSimulation(num_gpus=8, data_size=2097152, weight_bits=16)
+    fc_sim = AllReduceSimulation(num_gpus=8, data_size=2097152, weight_bits=16)
+
+    bytes_per_hop = 2097152 / 8
+    ring_startup_latency = 2 * ring_interconnect.link_module.latency
+    ring_total_latency = _expected_ring_allreduce_latency(
+        num_gpus=8,
+        link_bandwidth_per_direction=ring_interconnect.link_module.bandwidth_per_direction,
+        link_latency=ring_interconnect.link_module.latency,
+        header_size=ring_interconnect.link_module.header_size,
+        max_payload_size=ring_interconnect.link_module.max_payload_size,
+        link_count_per_device=ring_interconnect.link_count_per_device,
+        bytes_per_hop=bytes_per_hop,
+    )
+    ring_data_latency = ring_total_latency - ring_startup_latency
+
+    fc_phase_bytes = 2097152 * (8 - 1) / 8
+    fc_phase_latency = _expected_phase_latency(
+        participant_count=8,
+        link_bandwidth_per_direction=fc_interconnect.link_module.bandwidth_per_direction,
+        link_latency=fc_interconnect.link_module.latency,
+        header_size=fc_interconnect.link_module.header_size,
+        max_payload_size=fc_interconnect.link_module.max_payload_size,
+        link_count_per_device=fc_interconnect.link_count_per_device,
+        bytes_per_device=fc_phase_bytes,
+    )
+    fc_total_latency = 2 * fc_phase_latency
+    fc_startup_latency = 2 * fc_interconnect.link_module.latency
+    fc_data_latency = fc_total_latency - fc_startup_latency
+
+    assert ring_startup_latency * 1e6 == pytest.approx(2.0)
+    assert ring_data_latency * 1e6 == pytest.approx(8.665813333333333)
+    assert fc_startup_latency * 1e6 == pytest.approx(2.0)
+    assert fc_data_latency * 1e6 == pytest.approx(8.665813333333333)
+    assert ring_sim.simulate(ring_interconnect) == pytest.approx(ring_total_latency)
+    assert fc_sim.simulate(fc_interconnect) == pytest.approx(fc_total_latency)
 
 
 def test_hierarchical_gpus_per_node_validation() -> None:

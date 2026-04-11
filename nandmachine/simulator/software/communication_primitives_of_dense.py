@@ -119,6 +119,8 @@ class AllReduceSimulation(CommunicationPrimitive):
         if bytes_per_hop <= 0:
             return 0.0
 
+        # Dense RING uses an idealized all-reduce model with per-phase startup:
+        # one startup for reduce-scatter and one startup for all-gather.
         effective_bytes_per_hop = (
             header_size
             + ceil(bytes_per_hop / max_payload_size) * header_size
@@ -127,10 +129,14 @@ class AllReduceSimulation(CommunicationPrimitive):
         edge_bandwidth_per_direction = (
             link_bandwidth_per_direction * link_count_per_device
         )
-        per_hop_latency = (
-            link_latency + effective_bytes_per_hop / edge_bandwidth_per_direction
+        startup_latency = 2 * link_latency
+        data_latency = (
+            2
+            * (self.num_gpus - 1)
+            * effective_bytes_per_hop
+            / edge_bandwidth_per_direction
         )
-        return imbalance_factor * per_hop_latency * (2 * (self.num_gpus - 1))
+        return imbalance_factor * (startup_latency + data_latency)
 
     def simulate(self, interconnect_module: InterConnectModule) -> float:
         if interconnect_module.device_count != self.num_gpus:
