@@ -143,98 +143,47 @@ SEQUENCE_CASE_CONFIGS: tuple[SequenceCaseConfig, ...] = (
         cli_batch_sizes_by_hardware_type_by_slo_ms={
             CLI_HBM1_HBF5: {
                 50: {
-                    8: (264, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 270
-                    16: (944, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 947
+                    8: (264, 256),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 270
+                    16: (944, 512),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 947
                 },
                 100: {
-                    4: (268, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 270
-                    8: (944, 512, 256, 128),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 947
-                    16: (2288, 2048, 1024, 512),  # total capacity: 6400 GiB, remaining for KV: 5440 GiB, max batch size: 2300
+                    4: (268, 256),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 270
+                    8: (944, 512),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 947
+                    16: (2288, 2048),  # total capacity: 6400 GiB, remaining for KV: 5440 GiB, max batch size: 2300
                 },
             },
             CLI_HBM2_HBF4: {
                 50: {
-                    8: (128, 64, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
-                    16: (672, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
+                    8: (128, 64),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
+                    16: (672, 512),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
                 },
                 100: {
-                    4: (132, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
-                    8: (672, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
-                    16: (1744, 1024, 512, 256),  # total capacity: 5120 GiB, remaining for KV: 4160 GiB, max batch size: 1758
+                    4: (132, 128),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
+                    8: (672, 512),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
+                    16: (1744, 1024),  # total capacity: 5120 GiB, remaining for KV: 4160 GiB, max batch size: 1758
                 },
             },
             CLI_HBM3_HBF3: {
                 50: {
-                    16: (400, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 405
+                    16: (400, 256),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 405
                 },
                 100: {
-                    8: (400, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 405
-                    16: (1216, 1024, 512, 256),  # total capacity: 3840 GiB, remaining for KV: 2880 GiB, max batch size: 1217
+                    8: (400, 256),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 405
+                    16: (1216, 1024),  # total capacity: 3840 GiB, remaining for KV: 2880 GiB, max batch size: 1217
                 },
             },
             CLI_HBM4_HBF2: {
                 50: {
-                    16: (128, 64, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
+                    16: (128, 64),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
                 },
                 100: {
-                    8: (128, 64, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
-                    16: (672, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
+                    8: (128, 64),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
+                    16: (672, 512),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 676
                 },
             },
             CLI_HBM5_HBF1: {
                 100: {
-                    16: (128, 64, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
-                },
-            },
-        },
-    ),
-    SequenceCaseConfig(
-        input_sequence_length=8000,
-        output_sequence_length=1000,
-        cli_batch_sizes_by_hardware_type_by_slo_ms={
-            CLI_HBM1_HBF5: {
-                50: {
-                    8: (296, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 300
-                    16: (1040, 1024, 512, 256),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 1052
-                },
-                100: {
-                    4: (296, 256, 128, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 300
-                    8: (1048, 1024, 512, 256),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 1052
-                    16: (2544, 2048, 1024, 512),  # total capacity: 6400 GiB, remaining for KV: 5440 GiB, max batch size: 2555
-                },
-            },
-            CLI_HBM2_HBF4: {
-                50: {
-                    8: (144, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 150
-                    16: (736, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 751
-                },
-                100: {
-                    4: (148, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 150
-                    8: (744, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 751
-                    16: (1952, 1024, 512, 256),  # total capacity: 5120 GiB, remaining for KV: 4160 GiB, max batch size: 1954
-                },
-            },
-            CLI_HBM3_HBF3: {
-                50: {
-                    16: (448, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 451
-                },
-                100: {
-                    8: (448, 256, 128, 64),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 451
-                    16: (1344, 1024, 512, 256),  # total capacity: 3840 GiB, remaining for KV: 2880 GiB, max batch size: 1353
-                },
-            },
-            CLI_HBM4_HBF2: {
-                50: {
-                    16: (144, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 150
-                },
-                100: {
-                    8: (144, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 150
-                    16: (736, 512, 256, 128),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 751
-                },
-            },
-            CLI_HBM5_HBF1: {
-                100: {
-                    16: (144, 128, 64, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 150
+                    16: (128, 64),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 135
                 },
             },
         },
@@ -245,47 +194,47 @@ SEQUENCE_CASE_CONFIGS: tuple[SequenceCaseConfig, ...] = (
         cli_batch_sizes_by_hardware_type_by_slo_ms={
             CLI_HBM1_HBF5: {
                 50: {
-                    8: (120, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 128
-                    16: (448, 256, 128, 64),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 451
+                    8: (120, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 128
+                    16: (448, 256),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 451
                 },
                 100: {
-                    4: (124, 64, 32, 16),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 128
-                    8: (448, 256, 128, 64),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 451
-                    16: (1088, 1024, 512, 256),  # total capacity: 6400 GiB, remaining for KV: 5440 GiB, max batch size: 1095
+                    4: (124, 64),  # total capacity: 1600 GiB, remaining for KV: 640 GiB, max batch size: 128
+                    8: (448, 256),  # total capacity: 3200 GiB, remaining for KV: 2240 GiB, max batch size: 451
+                    16: (1088, 1024),  # total capacity: 6400 GiB, remaining for KV: 5440 GiB, max batch size: 1095
                 },
             },
             CLI_HBM2_HBF4: {
                 50: {
-                    8: (56, 32, 16, 8),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
-                    16: (320, 256, 128, 64),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
+                    8: (56, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
+                    16: (320, 256),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
                 },
                 100: {
-                    4: (60, 32, 16, 8),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
-                    8: (320, 256, 128, 64),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
-                    16: (832, 512, 256, 128),  # total capacity: 5120 GiB, remaining for KV: 4160 GiB, max batch size: 837
+                    4: (60, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
+                    8: (320, 256),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
+                    16: (832, 512),  # total capacity: 5120 GiB, remaining for KV: 4160 GiB, max batch size: 837
                 },
             },
             CLI_HBM3_HBF3: {
                 50: {
-                    16: (192, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 193
+                    16: (192, 128),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 193
                 },
                 100: {
-                    8: (192, 128, 64, 32),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 193
-                    16: (576, 512, 256, 128),  # total capacity: 3840 GiB, remaining for KV: 2880 GiB, max batch size: 579
+                    8: (192, 128),  # total capacity: 1920 GiB, remaining for KV: 960 GiB, max batch size: 193
+                    16: (576, 512),  # total capacity: 3840 GiB, remaining for KV: 2880 GiB, max batch size: 579
                 },
             },
             CLI_HBM4_HBF2: {
                 50: {
-                    16: (48, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
+                    16: (48, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
                 },
                 100: {
-                    8: (56, 32, 16, 8),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
-                    16: (320, 256, 128, 64),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
+                    8: (56, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
+                    16: (320, 256),  # total capacity: 2560 GiB, remaining for KV: 1600 GiB, max batch size: 322
                 },
             },
             CLI_HBM5_HBF1: {
                 100: {
-                    16: (48, 32, 16),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
+                    16: (48, 32),  # total capacity: 1280 GiB, remaining for KV: 320 GiB, max batch size: 64
                 },
             },
         },
@@ -335,10 +284,11 @@ def _derive_expected_batch_sizes_or_none(
 
     batch_sizes = [first_batch_size]
     second_batch_size = _largest_power_of_two_less_than_or_none(first_batch_size)
-    if second_batch_size is not None:
-        batch_sizes.extend(
-            [second_batch_size, second_batch_size // 2, second_batch_size // 4]
-        )
+    while second_batch_size is not None and second_batch_size > 0:
+        batch_sizes.append(second_batch_size)
+        if second_batch_size % num_ranks == 0:
+            break
+        second_batch_size //= 2
 
     deduplicated_batch_sizes: list[int] = []
     for batch_size in batch_sizes:
