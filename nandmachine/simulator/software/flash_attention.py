@@ -536,7 +536,8 @@ class FlashMLA_BatchedMatMul_Simulation:
             return_unit=return_unit,
         )
         del softmax_time
-        return qk_latent_time + qk_rope_time + sv_latent_time // 2
+        # return qk_latent_time + qk_rope_time + sv_latent_time // 2
+        return qk_latent_time + qk_rope_time
 
     def compile_and_simulate(
         self,
